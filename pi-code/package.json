@@ -4,7 +4,7 @@
   "description": "Voice-first video calling device for elderly users",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "electron . --kiosk",
     "dev": "electron . --enable-logging"
   },
   "keywords": [
