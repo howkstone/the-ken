@@ -1,0 +1,9 @@
+{
+  "name": "pi-code",
+  "version": "1.0.0",
+  "description": "Pi Code project",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js"
+  }
+}
