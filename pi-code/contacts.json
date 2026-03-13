@@ -1,3 +1,44 @@
 {
-  "contacts": []
+  "contacts": [
+    {
+      "id": "1",
+      "name": "Sarah",
+      "relationship": "Daughter",
+      "photo": "./photos/sarah.jpg",
+      "dailyRoomUrl": "",
+      "phoneNumber": "+447700900001",
+      "emergencyContact": true,
+      "position": 1
+    },
+    {
+      "id": "2",
+      "name": "Dr Wilson",
+      "relationship": "GP",
+      "photo": "./photos/drwilson.jpg",
+      "dailyRoomUrl": "",
+      "phoneNumber": "+447700900002",
+      "emergencyContact": false,
+      "position": 2
+    },
+    {
+      "id": "3",
+      "name": "Michael",
+      "relationship": "Son",
+      "photo": "./photos/michael.jpg",
+      "dailyRoomUrl": "",
+      "phoneNumber": "+447700900003",
+      "emergencyContact": true,
+      "position": 3
+    },
+    {
+      "id": "4",
+      "name": "Emma",
+      "relationship": "Granddaughter",
+      "photo": "./photos/emma.jpg",
+      "dailyRoomUrl": "",
+      "phoneNumber": "+447700900004",
+      "emergencyContact": false,
+      "position": 4
+    }
+  ]
 }

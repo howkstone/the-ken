@@ -1,9 +1,21 @@
 {
-  "name": "pi-code",
-  "version": "1.0.0",
-  "description": "Pi Code project",
+  "name": "the-ken",
+  "version": "0.1.0",
+  "description": "Voice-first video calling device for elderly users",
   "main": "main.js",
   "scripts": {
-    "start": "node main.js"
+    "start": "electron .",
+    "dev": "electron . --enable-logging"
+  },
+  "keywords": [
+    "elderly",
+    "video-calling",
+    "accessibility",
+    "raspberry-pi"
+  ],
+  "author": "Big Brain Company",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "electron": "^28.0.0"
   }
 }
