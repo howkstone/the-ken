@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Ken - Coming Soon</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;1,300&family=Jost:wght@300;400&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --cream: #F5F0E8;
+      --warm-white: #FDFAF5;
+      --ink: #1A1714;
+      --mid: #6B6459;
+      --gold: #C4A962;
+      --gold-light: #D9C48A;
+    }
+
+    html, body {
+      height: 100%;
+      background-color: var(--warm-white);
+      color: var(--ink);
+      font-family: 'Jost', sans-serif;
+      font-weight: 300;
+      overflow: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .page {
+      position: relative;
+      z-index: 1;
+      height: 100vh;
+      display: grid;
+      grid-template-rows: 1fr auto;
+      padding: clamp(2rem, 5vw, 4rem);
+    }
+
+    .rule-top {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, transparent, var(--gold) 30%, var(--gold-light) 60%, transparent);
+      opacity: 0;
+      animation: fadeIn 1.2s ease 0.2s forwards;
+    }
+
+    .centre {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: clamp(1.2rem, 3vw, 2rem);
+    }
+
+    .wordmark {
+      font-family: 'Cormorant Garamond', serif;
+      font-weight: 300;
+      font-size: clamp(3.5rem, 10vw, 7.5rem);
+      letter-spacing: 0.18em;
+      line-height: 1;
+      color: var(--ink);
+      opacity: 0;
+      transform: translateY(12px);
+      animation: riseIn 1s ease 0.4s forwards;
+    }
+
+    .wordmark .the {
+      font-style: italic;
+      font-size: 0.52em;
+      letter-spacing: 0.3em;
+      color: var(--mid);
+      display: block;
+      margin-bottom: 0.15em;
+    }
+
+    .divider {
+      width: 48px;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--gold), transparent);
+      opacity: 0;
+      animation: fadeIn 0.8s ease 1s forwards;
+    }
+
+    .tagline {
+      font-family: 'Cormorant Garamond', serif;
+      font-style: italic;
+      font-weight: 300;
+      font-size: clamp(1.1rem, 2.5vw, 1.55rem);
+      letter-spacing: 0.04em;
+      color: var(--mid);
+      opacity: 0;
+      animation: fadeIn 1s ease 1.2s forwards;
+    }
+
+    .sub {
+      font-family: 'Jost', sans-serif;
+      font-weight: 300;
+      font-size: clamp(0.7rem, 1.4vw, 0.82rem);
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: var(--gold);
+      opacity: 0;
+      animation: fadeIn 1s ease 1.6s forwards;
+    }
+
+    .notify-block {
+      opacity: 0;
+      animation: fadeIn 1s ease 2s forwards;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .notify-label {
+      font-size: clamp(0.65rem, 1.2vw, 0.75rem);
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--mid);
+    }
+
+    .notify-form {
+      display: flex;
+      border: 1px solid rgba(196, 169, 98, 0.4);
+      background: rgba(245, 240, 232, 0.5);
+    }
+
+    .notify-form input {
+      background: transparent;
+      border: none;
+      outline: none;
+      padding: 0.7rem 1.2rem;
+      font-family: 'Jost', sans-serif;
+      font-weight: 300;
+      font-size: 0.82rem;
+      letter-spacing: 0.05em;
+      color: var(--ink);
+      width: clamp(180px, 25vw, 260px);
+    }
+
+    .notify-form input::placeholder { color: var(--mid); opacity: 0.6; }
+
+    .notify-form button {
+      background: var(--gold);
+      border: none;
+      padding: 0.7rem 1.3rem;
+      font-family: 'Jost', sans-serif;
+      font-weight: 400;
+      font-size: 0.72rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--ink);
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .notify-form button:hover { background: var(--gold-light); }
+
+    .thanks {
+      display: none;
+      font-family: 'Cormorant Garamond', serif;
+      font-style: italic;
+      font-size: 1rem;
+      color: var(--gold);
+      letter-spacing: 0.05em;
+    }
+
+    .footer {
+      display: flex;
+      justify-content: center;
+      opacity: 0;
+      animation: fadeIn 1s ease 2.4s forwards;
+    }
+
+    .footer span {
+      font-size: 0.65rem;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--mid);
+      opacity: 0.5;
+    }
+
+    .corner {
+      position: fixed;
+      width: 20px;
+      height: 20px;
+      opacity: 0;
+      animation: fadeIn 1s ease 1.8s forwards;
+    }
+    .corner::before, .corner::after {
+      content: '';
+      position: absolute;
+      background: var(--gold);
+      opacity: 0.5;
+    }
+    .corner::before { width: 100%; height: 1px; top: 0; left: 0; }
+    .corner::after  { width: 1px; height: 100%; top: 0; left: 0; }
+
+    .corner.tl { top: 2rem; left: 2rem; }
+    .corner.tr { top: 2rem; right: 2rem; transform: scaleX(-1); }
+    .corner.bl { bottom: 2rem; left: 2rem; transform: scaleY(-1); }
+    .corner.br { bottom: 2rem; right: 2rem; transform: scale(-1); }
+
+    @keyframes fadeIn { to { opacity: 1; } }
+    @keyframes riseIn { to { opacity: 1; transform: translateY(0); } }
+
+    @media (max-width: 480px) { .corner { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="rule-top"></div>
+  <div class="corner tl"></div>
+  <div class="corner tr"></div>
+  <div class="corner bl"></div>
+  <div class="corner br"></div>
+
+  <div class="page">
+    <div class="centre">
+      <div class="wordmark">
+        <span class="the">The</span>
+        Ken
+      </div>
+      <div class="divider"></div>
+      <p class="tagline">Simple for them. The world to you.</p>
+      <p class="sub">Something meaningful is coming</p>
+
+      <a href="/about.html" style="font-size:0.65rem;letter-spacing:0.22em;text-transform:uppercase;color:var(--mid);text-decoration:none;opacity:0;animation:fadeIn 1s ease 1.9s forwards;display:inline-block;border-bottom:1px solid rgba(107,100,89,0.3);padding-bottom:2px;transition:color 0.2s ease;" onmouseover="this.style.color='var(--gold)'" onmouseout="this.style.color='var(--mid)'">What are we building?</a>
+
+      <div class="notify-block">
+        <p class="notify-label">Be the first to know</p>
+        <form class="notify-form" id="form" name="interest" method="POST" data-netlify="true" onsubmit="handleSubmit(event)">
+          <input type="hidden" name="form-name" value="interest" />
+          <input type="email" name="email" placeholder="your@email.com" id="emailInput" required />
+          <button type="submit">Notify me</button>
+        </form>
+        <p class="thanks" id="thanks">Thank you - we'll be in touch.</p>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span>&copy; 2026 The Ken</span>
+    </div>
+  </div>
+
+  <script>
+    function handleSubmit(e) {
+      e.preventDefault();
+      const form = document.getElementById('form');
+      const thanks = document.getElementById('thanks');
+      const data = new FormData(form);
+      fetch('/', { method: 'POST', body: data })
+        .then(() => {
+          form.style.display = 'none';
+          thanks.style.display = 'block';
+        })
+        .catch(() => {
+          form.style.display = 'none';
+          thanks.style.display = 'block';
+        });
+    }
+  </script>
+</body>
+</html>

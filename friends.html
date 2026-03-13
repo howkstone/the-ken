@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Ken - Inside View</title>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Jost:wght@300;400&display=swap" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    :root { --cream:#F5F0E8; --warm-white:#FDFAF5; --ink:#1A1714; --mid:#4A443D; --gold:#B8962A; --gold-light:#D9C48A; }
+    html { scroll-behavior: smooth; }
+    body { background-color:var(--warm-white); color:var(--ink); font-family:'Jost',sans-serif; font-weight:400; }
+    body::before { content:''; position:fixed; inset:0; background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E"); pointer-events:none; z-index:0; }
+    .rule-top { position:fixed; top:0; left:0; right:0; height:3px; background:linear-gradient(90deg,transparent,var(--gold) 30%,var(--gold-light) 60%,transparent); z-index:100; }
+    nav { position:fixed; top:3px; left:0; right:0; z-index:99; display:flex; justify-content:space-between; align-items:center; padding:1.4rem clamp(2rem,6vw,5rem); background:rgba(253,250,245,0.94); backdrop-filter:blur(8px); }
+    .nav-wordmark { font-family:'Cormorant Garamond',serif; font-weight:300; font-size:1.4rem; letter-spacing:0.2em; color:var(--ink); text-decoration:none; }
+    .nav-wordmark span { font-style:italic; color:var(--mid); font-size:0.75em; margin-right:0.4em; }
+    .nav-badge { font-size:0.6rem; letter-spacing:0.2em; text-transform:uppercase; background:var(--gold); color:var(--ink); padding:0.3rem 0.8rem; }
+    .hero { position:relative; z-index:1; padding:clamp(7rem,14vw,11rem) clamp(2rem,8vw,6rem) clamp(3rem,6vw,4rem); max-width:860px; margin:0 auto; }
+    .hero-eyebrow { font-size:0.65rem; letter-spacing:0.3em; text-transform:uppercase; color:var(--gold); margin-bottom:1.8rem; }
+    .hero h1 { font-family:'Cormorant Garamond',serif; font-weight:300; font-size:clamp(2.4rem,6vw,4.5rem); line-height:1.1; color:var(--ink); margin-bottom:1.8rem; }
+    .hero h1 em { font-style:italic; color:var(--mid); }
+    .hero-rule { width:48px; height:1px; background:linear-gradient(90deg,var(--gold),transparent); margin:2rem 0; }
+    .hero p { font-family:'Cormorant Garamond',serif; font-style:italic; font-size:clamp(1.1rem,2vw,1.35rem); color:var(--mid); line-height:1.8; max-width:620px; font-weight:400; }
+    .wrap { position:relative; z-index:1; max-width:860px; margin:0 auto; padding:0 clamp(2rem,8vw,6rem); }
+    .section-label { font-size:0.63rem; letter-spacing:0.3em; text-transform:uppercase; color:var(--gold); margin-bottom:0.8rem; }
+    .section-title { font-family:'Cormorant Garamond',serif; font-weight:300; font-size:clamp(1.6rem,3.5vw,2.4rem); color:var(--ink); }
+    .section-title em { font-style:italic; color:var(--mid); }
+    .section-rule { width:32px; height:1px; background:var(--gold); opacity:0.5; margin:1.2rem 0 2rem; }
+    .section-sep { width:100%; height:1px; background:linear-gradient(90deg,transparent,rgba(196,169,98,0.3),transparent); margin:clamp(2.5rem,5vw,4rem) 0; }
+    .feature-list { display:flex; flex-direction:column; border:1px solid rgba(196,169,98,0.2); }
+    .feature-item { display:grid; grid-template-columns:48px 1fr; border-bottom:1px solid rgba(196,169,98,0.15); transition:background 0.18s ease; }
+    .feature-item:last-child { border-bottom:none; }
+    .feature-item:nth-child(odd) { background:rgba(245,240,232,0.35); }
+    .feature-item:hover { background:rgba(196,169,98,0.08); }
+    .feature-icon { display:flex; align-items:flex-start; justify-content:center; padding:1.3rem 0 1.3rem 1.2rem; }
+    .feature-icon svg { width:18px; height:18px; stroke:var(--gold); fill:none; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
+    .feature-body { padding:1.3rem 1.5rem 1.3rem 1rem; }
+    .feature-name { font-size:0.82rem; font-weight:500; letter-spacing:0.04em; color:var(--ink); margin-bottom:0.3rem; }
+    .feature-desc { font-family:'Cormorant Garamond',serif; font-style:italic; font-size:1.05rem; color:var(--mid); line-height:1.55; font-weight:400; }
+    .img-section { position:relative; z-index:1; padding:0 0 clamp(2rem,5vw,4rem); background:var(--warm-white); }
+    .img-hero { max-width:860px; margin:0 auto; padding:0 clamp(2rem,8vw,6rem); }
+    .img-hero-label { font-size:0.63rem; letter-spacing:0.3em; text-transform:uppercase; color:var(--gold); margin-bottom:1rem; }
+    .img-hero-main { width:100%; display:block; border:1px solid rgba(196,169,98,0.15); }
+    .img-thumbs { max-width:860px; margin:0 auto; padding:1rem clamp(2rem,8vw,6rem) 0; display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+    .img-thumb { width:100%; display:block; border:1px solid rgba(196,169,98,0.15); cursor:pointer; transition:opacity 0.2s ease; }
+    .img-thumb:hover { opacity:0.85; }
+    .img-caption { font-family:'Cormorant Garamond',serif; font-style:italic; font-size:0.88rem; color:var(--mid); text-align:center; margin-top:0.6rem; font-weight:400; }
+    .lightbox { display:none; position:fixed; inset:0; background:rgba(26,23,20,0.92); z-index:1000; align-items:center; justify-content:center; padding:2rem; }
+    .lightbox.open { display:flex; }
+    .lightbox img { max-width:90vw; max-height:90vh; object-fit:contain; }
+    .lightbox-close { position:absolute; top:1.5rem; right:2rem; font-family:'Jost',sans-serif; font-size:0.7rem; letter-spacing:0.2em; text-transform:uppercase; color:var(--gold-light); cursor:pointer; background:none; border:none; }
+    .spec-table tr { border-bottom:1px solid rgba(196,169,98,0.15); }
+    .spec-table tr:last-child { border-bottom:none; }
+    .spec-table td { padding:0.9rem 0; font-family:'Cormorant Garamond',serif; font-size:1.08rem; color:var(--mid); vertical-align:top; font-weight:400; }
+    .spec-table td:first-child { font-family:'Jost',sans-serif; font-style:normal; font-size:0.8rem; font-weight:500; letter-spacing:0.05em; color:var(--ink); width:38%; padding-right:1.5rem; }
+    .reveal { opacity:0; transform:translateY(18px); transition:opacity 0.7s ease,transform 0.7s ease; }
+    .reveal.visible { opacity:1; transform:translateY(0); }
+    .config-outer { position:relative; z-index:1; background:var(--cream); border-top:1px solid rgba(196,169,98,0.2); border-bottom:1px solid rgba(196,169,98,0.2); padding:clamp(3rem,7vw,5rem) 0; margin:clamp(2rem,5vw,4rem) 0 0; }
+    .config-inner { max-width:860px; margin:0 auto; padding:0 clamp(2rem,8vw,6rem); }
+    .config-eyebrow { font-size:0.63rem; letter-spacing:0.3em; text-transform:uppercase; color:var(--gold); margin-bottom:0.8rem; }
+    .config-title { font-family:'Cormorant Garamond',serif; font-weight:300; font-size:clamp(1.6rem,3.5vw,2.4rem); color:var(--ink); margin-bottom:0.3rem; }
+    .config-title em { font-style:italic; color:var(--mid); }
+    .config-note { font-family:'Cormorant Garamond',serif; font-style:italic; font-size:0.95rem; color:var(--mid); }
+    .config-rule { width:32px; height:1px; background:var(--gold); opacity:0.5; margin:1.2rem 0 1.5rem; }
+    .config-group-label { font-size:0.6rem; letter-spacing:0.28em; text-transform:uppercase; color:var(--mid); margin-bottom:1rem; padding-bottom:0.5rem; border-bottom:1px solid rgba(196,169,98,0.2); }
+    .config-primary { display:grid; grid-template-columns:repeat(3,1fr); gap:1.2rem; margin-bottom:1rem; }
+    @media(max-width:580px){ .config-primary { grid-template-columns:1fr; } }
+    .config-card { background:var(--warm-white); border:1px solid rgba(196,169,98,0.2); padding:1.4rem 1.5rem; }
+    .config-card-label { font-size:0.6rem; letter-spacing:0.25em; text-transform:uppercase; color:var(--gold); margin-bottom:1rem; }
+    .config-options { display:flex; flex-direction:column; gap:0.5rem; }
+    .config-btn { display:flex; align-items:flex-start; gap:0.75rem; padding:0.7rem 0.9rem; background:transparent; border:1px solid rgba(196,169,98,0.2); cursor:pointer; transition:all 0.18s ease; text-align:left; width:100%; font-family:'Jost',sans-serif; }
+    .config-btn:hover { border-color:var(--gold); background:rgba(196,169,98,0.06); }
+    .config-btn.selected { border-color:var(--gold); background:rgba(196,169,98,0.13); }
+    .config-dot { width:9px; height:9px; border-radius:50%; border:1.5px solid var(--mid); flex-shrink:0; margin-top:3px; transition:all 0.15s ease; }
+    .config-btn.selected .config-dot { background:var(--gold); border-color:var(--gold); }
+    .config-btn-name { font-size:0.78rem; font-weight:500; color:var(--ink); letter-spacing:0.03em; line-height:1.3; }
+    .config-btn-desc { font-family:'Cormorant Garamond',serif; font-style:italic; font-size:0.92rem; color:var(--mid); margin-top:0.1rem; line-height:1.4; font-weight:400; }
+    .config-btn-price { font-size:0.72rem; color:var(--gold); letter-spacing:0.05em; margin-top:0.2rem; font-weight:500; }
+    .acc-outer { background:rgba(26,23,20,0.03); border:1px solid rgba(196,169,98,0.15); padding:1.5rem 1.5rem 0.8rem; margin-top:0.5rem; }
+    .acc-sep { margin:0 0 1.2rem; display:flex; align-items:center; gap:1rem; }
+    .acc-sep-line { flex:1; height:1px; background:rgba(196,169,98,0.25); }
+    .acc-sep-label { font-size:0.6rem; letter-spacing:0.28em; text-transform:uppercase; color:var(--mid); white-space:nowrap; }
+    .acc-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:0.7rem; margin-bottom:2rem; }
+    @media(max-width:580px){ .acc-grid { grid-template-columns:1fr 1fr; } }
+    .acc-btn { display:flex; flex-direction:column; align-items:center; gap:0.3rem; padding:1.2rem 1rem 1rem; background:var(--warm-white); border:1px solid rgba(196,169,98,0.2); cursor:pointer; transition:all 0.18s ease; text-align:center; font-family:'Jost',sans-serif; }
+    .acc-btn:hover { border-color:var(--gold); background:rgba(196,169,98,0.06); }
+    .acc-btn.selected { border-color:var(--gold); background:rgba(196,169,98,0.13); }
+    .acc-icon { width:52px; height:52px; color:var(--gold); opacity:0.75; margin-bottom:0.4rem; }
+    .acc-icon svg { width:100%; height:100%; }
+    .acc-name { font-size:0.76rem; font-weight:500; color:var(--ink); letter-spacing:0.03em; }
+    .acc-desc { font-family:'Cormorant Garamond',serif; font-style:italic; font-size:0.9rem; color:var(--mid); font-weight:400; }
+    .acc-price { font-size:0.7rem; color:var(--gold); margin-top:0.2rem; font-weight:500; }
+    .summary { background:var(--ink); padding:1.8rem 2rem; }
+    .summary-top { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:1rem; }
+    .summary-heading { font-family:'Cormorant Garamond',serif; font-size:1.1rem; color:var(--gold-light); letter-spacing:0.06em; }
+    .summary-price { font-family:'Cormorant Garamond',serif; font-size:1.9rem; font-weight:300; color:var(--warm-white); }
+    .summary-price sup { font-size:0.9rem; vertical-align:super; }
+    .summary-note { font-family:'Cormorant Garamond',serif; font-style:italic; font-size:0.82rem; color:rgba(253,250,245,0.4); margin-top:0.2rem; }
+    .summary-tags { display:flex; flex-wrap:wrap; gap:0.4rem; margin-top:1rem; padding-top:1rem; border-top:1px solid rgba(255,255,255,0.08); }
+    .stag { font-size:0.6rem; letter-spacing:0.15em; text-transform:uppercase; padding:0.3rem 0.7rem; border:1px solid rgba(196,169,98,0.4); color:var(--gold-light); }
+    .stag.acc { border-color:rgba(255,255,255,0.15); color:rgba(253,250,245,0.5); }
+    footer { position:relative; z-index:1; text-align:center; padding:2.5rem; border-top:1px solid rgba(196,169,98,0.15); }
+    footer span { font-size:0.65rem; letter-spacing:0.18em; text-transform:uppercase; color:var(--mid); opacity:0.5; }
+  </style>
+</head>
+<body>
+  <div class="rule-top"></div>
+  <nav>
+    <a href="/" class="nav-wordmark"><span>The</span>Ken</a>
+    <span class="nav-badge">Friends &amp; Family</span>
+  </nav>
+
+  <div class="hero reveal">
+    <p class="hero-eyebrow">Private briefing</p>
+    <h1>Here's what we're building.</h1>
+    <div class="hero-rule"></div>
+    <p>This is a private page. You've been invited to see it because we trust your honest opinions... so you need to understand what we're working on.</p>
+    <p style="margin-top:1rem;">Please write to us at <a href="/cdn-cgi/l/email-protection#9cf4f3ebfdeef8dcfef5fbfeeefdf5f2fff3f1ecfdf2e5b2fff3b2e9f7" style="color:var(--gold);text-decoration:none;border-bottom:1px solid rgba(196,169,98,0.4);"><span class="__cf_email__" data-cfemail="0d65627a6c7f694d6f646a6f7f6c64636e62607d6c6374236e62237866">[email&#160;protected]</span></a> on anything - features, design, interface, pricing, suggested target buyers (and how to target them!).</p>
+ <p style="margin-top:1rem;">We're a small team of 4 friends, building the best product possible using our collective experience, and we will always be a feedback-focused company.</p>
+  </div>
+
+  <div class="img-section reveal">
+    <div class="img-hero">
+      <p class="img-hero-label">The device</p>
+      <img class="img-hero-main" src="ken_angle_view.png" alt="The Ken - angle view" onclick="openLightbox(this.src)" style="cursor:pointer;" />
+    </div>
+    <div class="img-thumbs">
+      <div>
+        <img class="img-thumb" src="ken_front_view.png" alt="The Ken - front view" onclick="openLightbox(this.src)" />
+
+      </div>
+      <div>
+        <img class="img-thumb" src="ken_rear_view.png" alt="The Ken - rear view" onclick="openLightbox(this.src)" />
+    
+      </div>
+    </div>
+  </div>
+
+  <div class="lightbox" id="lightbox" onclick="closeLightbox()">
+    <button class="lightbox-close" onclick="closeLightbox()">Close</button>
+    <img id="lightbox-img" src="" alt="" />
+  </div>
+
+  <div class="wrap">
+    <div class="reveal">
+      <p class="section-label">Every Ken includes</p>
+      <h2 class="section-title">Features</h2>
+      <div class="section-rule"></div>
+      <div class="feature-list">
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Voice-first by default</div>
+            <div class="feature-desc">Voice is the primary way to interact - no buttons required. Say who you want to call, and The Ken does the rest.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M15 10l4.553-2.07A1 1 0 0121 8.87v6.26a1 1 0 01-1.447.9L15 14M3 8a2 2 0 012-2h10a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Video calling &amp; video voicemails</div>
+            <div class="feature-desc">Tapping a contact's face opens their history - video voicemails they've left, recent calls, and a bold call button. Family can leave short video messages that play automatically, so the connection stays alive between calls.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/><path d="M16 3.13a4 4 0 010 7.75M21 21v-2a4 4 0 00-3-3.87"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Large photo contact tiles</div>
+            <div class="feature-desc">Faces and names fill the screen - no numbers, no menus. Contacts are set up and managed remotely by family or carers.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Medication &amp; appointment reminders</div>
+            <div class="feature-desc">Scheduled alerts with voice announcement and a visible on-screen prompt - no dismissal required. Family or carers can add anything remotely: prescriptions, appointments, birthdays, bin day.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Clear stereo speaker</div>
+            <div class="feature-desc">Loud, warm and calibrated for speech intelligibility, not music. Strong enough to hear clearly from an armchair across the room.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0016.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 002 8.5c0 2.3 1.5 4.05 3 5.5l7 7 7-7z"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Hearing aid compatible</div>
+            <div class="feature-desc">Pairs directly with modern Bluetooth hearing aids, so calls and audio stream through them automatically. For many users, this will be the single most important feature on the device.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">High-contrast touchscreen</div>
+            <div class="feature-desc">Large interface elements, bold typography and strong contrast throughout. Designed from day one for reduced vision - not retrofitted as an accessibility setting.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Nightlight mode</div>
+            <div class="feature-desc">Dims automatically to a warm, low glow at a set time each evening. Enough light to orient in the dark without disturbing sleep.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14"/><path d="M15.54 8.46a5 5 0 010 7.07M8.46 8.46a5 5 0 000 7.07"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Adjustable stand</div>
+            <div class="feature-desc">Solid, weighted base with smooth angle adjustment - bedside table, kitchen counter, armchair tray. One hand is enough; no tools, no fiddly mechanisms.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Daily photo carousel</div>
+            <div class="feature-desc">Family send photos from their phones and they appear on screen throughout the day - grandchildren, dogs, a view from a walk. The device feels alive even when no one calls.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Physical reset button</div>
+            <div class="feature-desc">Hold for 10 seconds and the device returns to a clean working state. No tech support call, no family member driving over.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M9 22V12h6v10"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Remote family access</div>
+            <div class="feature-desc">Every setting, contact, photo and calendar entry is manageable remotely by family. The device is designed so the user never needs to configure or troubleshoot anything - but they can if they want to.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/><path d="M8.56 2.75c4.37 6.03 6.02 9.42 8.03 17.72m2.54-15.38c-3.72 4.35-8.94 5.66-16.88 5.85m19.5 1.9c-3.5-.93-6.63-.82-8.94 0-2.58.92-5.01 2.86-7.44 6.32"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Connects to headphones, keyboards &amp; more</div>
+            <div class="feature-desc">Optional accessories - wireless headphones, a large-key keyboard, a remote control - pair automatically with no setup. Home WiFi connects once during installation and is never touched again.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Annual feedback programme &middot; £20/year</div>
+            <div class="feature-desc">Subscription pricing is just £20 per year, covering ongoing support and development. We refund that year's fee to the first 5 people whose feedback we go on to implement - hearing from real users is how The Ken gets better.</div>
+          </div>
+        </div>
+
+        <div class="feature-item">
+          <div class="feature-icon"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg></div>
+          <div class="feature-body">
+            <div class="feature-name">Over-the-air software updates</div>
+            <div class="feature-desc">Improvements install automatically overnight. The user will never notice it happening.</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="section-sep"></div>
+
+    <div class="reveal">
+      <p class="section-label">Hardware options</p>
+      <h2 class="section-title">Choose what <em>fits the person.</em></h2>
+      <div class="section-rule"></div>
+      <table class="spec-table">
+        <tr><td>Display sizes</td><td>15", 18", and 21". The right choice depends on where it will live and how close they sit. 18" is the most common.</td></tr>
+        <tr><td>Camera</td><td>Standard 720p, or wide-angle 1080p with 120 degree field of view - better for those who move around during calls.</td></tr>
+        <tr><td>Battery backup</td><td>Optional 2-hour or 4-hour battery. Useful during power cuts or if the device moves between rooms.</td></tr>
+      </table>
+    </div>
+
+    <div class="section-sep"></div>
+  </div>
+
+  <div id="configurator-root"></div>
+
+  <footer>
+    <span>&copy; 2026 The Ken &nbsp;&middot;&nbsp; Private briefing - please don't share publicly</span>
+  </footer>
+
+  <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script type="text/babel">
+    const { useState } = React;
+    const BASE = 165;
+
+    const accIcons = {
+      pendant: (
+        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <ellipse cx="24" cy="32" rx="10" ry="12"/>
+          <path d="M24 20v-8"/>
+          <path d="M18 12a6 6 0 0112 0"/>
+          <circle cx="24" cy="32" r="3" fill="currentColor" opacity="0.3"/>
+        </svg>
+      ),
+      headphones: (
+        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M8 28v-4a16 16 0 0132 0v4"/>
+          <rect x="6" y="28" width="8" height="12" rx="4"/>
+          <rect x="34" y="28" width="8" height="12" rx="4"/>
+        </svg>
+      ),
+      keyboard: (
+        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="4" y="14" width="40" height="26" rx="3"/>
+          <rect x="9" y="20" width="6" height="5" rx="1"/>
+          <rect x="19" y="20" width="6" height="5" rx="1"/>
+          <rect x="29" y="20" width="6" height="5" rx="1"/>
+          <rect x="9" y="29" width="6" height="5" rx="1"/>
+          <rect x="19" y="29" width="16" height="5" rx="1"/>
+          <rect x="39" y="20" width="4" height="14" rx="1"/>
+          <circle cx="38" cy="10" r="4"/>
+          <path d="M42 10h3M38 6v-3"/>
+        </svg>
+      ),
+      wallmount: (
+        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="4" y="6" width="28" height="36" rx="3"/>
+          <line x1="4" y1="6" x2="4" y2="42"/>
+          <line x1="32" y1="8" x2="44" y2="8"/>
+          <line x1="44" y1="8" x2="44" y2="26"/>
+          <line x1="32" y1="26" x2="44" y2="26"/>
+          <circle cx="38" cy="17" r="2" fill="currentColor" opacity="0.4"/>
+        </svg>
+      ),
+      remote: (
+        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="14" y="4" width="20" height="40" rx="10"/>
+          <circle cx="24" cy="14" r="3"/>
+          <circle cx="18" cy="24" r="2.5"/>
+          <circle cx="30" cy="24" r="2.5"/>
+          <circle cx="24" cy="32" r="2.5"/>
+          <circle cx="24" cy="24" r="2.5"/>
+        </svg>
+      ),
+      case: (
+        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="4" y="12" width="40" height="30" rx="3"/>
+          <path d="M16 12V9a8 8 0 0116 0v3"/>
+          <line x1="4" y1="22" x2="44" y2="22"/>
+          <line x1="14" y1="12" x2="14" y2="42"/>
+          <line x1="34" y1="12" x2="34" y2="42"/>
+        </svg>
+      )
+    };
+
+    const specs = {
+      display: {
+        '15': { detail:'15" Display', desc:'Compact - bedside or small desk', weight:'1.5kg', add:0 },
+        '18': { detail:'18" Display', desc:'Mid-size - most popular choice', weight:'1.75kg', add:10 },
+        '21': { detail:'21" Display', desc:'Large - living rooms, weaker vision', weight:'2.0kg', add:20 }
+      },
+      camera: {
+        basic: { name:'Standard camera', desc:'720p - clear for most calls', add:0 },
+        wide:  { name:'Wide-angle camera', desc:'1080p, 120 degree - better for movement', add:4 }
+      },
+      battery: {
+        none:  { name:'No battery', desc:'Mains-powered only', add:0 },
+        '2hr': { name:'2-hour battery', desc:'Short mobility or power cut cover', add:6 },
+        '4hr': { name:'4-hour battery', desc:'Extended use away from a socket', add:10 }
+      },
+      accessories: {
+        pendant:   { name:'Emergency Pendant', desc:'Wearable call button', price:20 },
+        headphones:{ name:'Headphones', desc:'Wireless over-ear', price:25 },
+        keyboard:  { name:'Large-key Keyboard', desc:'With mouse', price:15 },
+        wallmount: { name:'Wall Mount', desc:'Adjustable angle', price:15 },
+        remote:    { name:'Remote Control', desc:'Physical backup control', price:15 },
+        case:      { name:'Protective Case', desc:'Waterproof with handles', price:30 }
+      }
+    };
+
+    function Configurator() {
+      const [config, setConfig] = useState({
+        display:'18', camera:'basic', battery:'none',
+        accessories:{ pendant:false, headphones:false, keyboard:false, wallmount:false, remote:false, case:false }
+      });
+
+      const toggle = k => setConfig(c => ({ ...c, accessories:{ ...c.accessories, [k]:!c.accessories[k] } }));
+      const devicePrice = BASE + specs.display[config.display].add + specs.camera[config.camera].add + specs.battery[config.battery].add;
+      const accTotal = Object.entries(config.accessories).filter(([,v])=>v).reduce((s,[k])=>s+specs.accessories[k].price,0);
+      const total = devicePrice + accTotal;
+      const selAccs = Object.entries(config.accessories).filter(([,v])=>v).map(([k])=>specs.accessories[k].name);
+
+      return (
+        <div className="config-outer">
+          <div className="config-inner">
+            <p className="config-eyebrow">Build yours</p>
+            <h2 className="config-title">Configure <em>a Ken</em></h2>
+            <p className="config-note">Pricing below is indicative - subject to change before launch.</p>
+            <div className="config-rule"></div>
+            <p className="config-group-label">Device configuration</p>
+            <div className="config-primary">
+
+              <div className="config-card">
+                <p className="config-card-label">Display size</p>
+                <div className="config-options">
+                  {Object.entries(specs.display).map(([k,d]) => (
+                    <button key={k} className={`config-btn ${config.display===k?'selected':''}`} onClick={()=>setConfig(c=>({...c,display:k}))}>
+                      <div className="config-dot"></div>
+                      <div>
+                        <div className="config-btn-name">{d.detail} &middot; {d.weight}</div>
+                        <div className="config-btn-desc">{d.desc}</div>
+                        <div className="config-btn-price">{d.add===0?'Included':`+£${d.add}`}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="config-card">
+                <p className="config-card-label">Camera</p>
+                <div className="config-options">
+                  {Object.entries(specs.camera).map(([k,d]) => (
+                    <button key={k} className={`config-btn ${config.camera===k?'selected':''}`} onClick={()=>setConfig(c=>({...c,camera:k}))}>
+                      <div className="config-dot"></div>
+                      <div>
+                        <div className="config-btn-name">{d.name}</div>
+                        <div className="config-btn-desc">{d.desc}</div>
+                        <div className="config-btn-price">{d.add===0?'Included':`+£${d.add}`}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="config-card">
+                <p className="config-card-label">Battery backup</p>
+                <div className="config-options">
+                  {Object.entries(specs.battery).map(([k,d]) => (
+                    <button key={k} className={`config-btn ${config.battery===k?'selected':''}`} onClick={()=>setConfig(c=>({...c,battery:k}))}>
+                      <div className="config-dot"></div>
+                      <div>
+                        <div className="config-btn-name">{d.name}</div>
+                        <div className="config-btn-desc">{d.desc}</div>
+                        <div className="config-btn-price">{d.add===0?'No extra cost':`+£${d.add}`}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+
+            <div className="acc-outer">
+              <div className="acc-sep">
+                <div className="acc-sep-line"></div>
+                <span className="acc-sep-label">Optional accessories</span>
+                <div className="acc-sep-line"></div>
+              </div>
+              <div className="acc-grid">
+                {Object.entries(specs.accessories).map(([k,d]) => (
+                  <button key={k} className={`acc-btn ${config.accessories[k]?'selected':''}`} onClick={()=>toggle(k)}>
+                    <div className="acc-icon">{accIcons[k]}</div>
+                    <div className="acc-name">{d.name}</div>
+                    <div className="acc-desc">{d.desc}</div>
+                    <div className="acc-price">£{d.price}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="summary">
+              <div className="summary-top">
+                <div>
+                  <div className="summary-heading">Your configuration</div>
+                  <div className="summary-note">Indicative pricing &middot; confirmed at launch</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div className="summary-price"><sup>£</sup>{total}</div>
+                  {accTotal>0 && <div className="summary-note">Device £{devicePrice} + accessories £{accTotal}</div>}
+                </div>
+              </div>
+              <div className="summary-tags">
+                <span className="stag">{specs.display[config.display].detail}</span>
+                <span className="stag">{specs.camera[config.camera].name}</span>
+                <span className="stag">{specs.battery[config.battery].name}</span>
+                {selAccs.map(n=><span key={n} className="stag acc">{n}</span>)}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('configurator-root')).render(<Configurator />);
+  </script>
+
+  <script>
+    function openLightbox(src) {
+      document.getElementById('lightbox-img').src = src;
+      document.getElementById('lightbox').classList.add('open');
+    }
+    function closeLightbox() {
+      document.getElementById('lightbox').classList.remove('open');
+    }
+    document.addEventListener('keydown', e => { if(e.key === 'Escape') closeLightbox(); });
+
+    const reveals = document.querySelectorAll('.reveal');
+    const io = new IntersectionObserver(entries => {
+      entries.forEach(e => { if(e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } });
+    }, { threshold: 0.08 });
+    reveals.forEach(r => io.observe(r));
+  </script>
+</body>
+</html>
