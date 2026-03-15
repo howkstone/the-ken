@@ -1,0 +1,20 @@
+[Unit]
+Description=The Ken - Electron Kiosk App
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+User=pi
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/pi/.Xauthority
+WorkingDirectory=/home/pi/ken-minimal
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/bin/npx electron . --disable-gpu
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical-session.target

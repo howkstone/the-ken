@@ -1,0 +1,10 @@
+name = "ken-api"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "KEN_KV"
+id = "b775853748654842bb92b697269b350d"
+
+[triggers]
+crons = ["*/5 * * * *"]

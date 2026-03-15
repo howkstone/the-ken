@@ -1,6 +1,19 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
 
+// Disable GPU acceleration on Pi (prevents crash)
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('disable-gpu');
+app.commandLine.appendSwitch('disable-software-rasterizer');
+
+// Start the contact server for QR code add-contact feature
+try {
+  require('./server.js');
+  console.log('Contact server started');
+} catch (err) {
+  console.error('Failed to start contact server:', err.message);
+}
+
 function createWindow() {
   // Detect if running on the actual Pi touchscreen or via HDMI/VNC
   const isProduction = process.argv.includes('--kiosk');

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Add Contact - The Ken</title>
+  <link href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Jost', sans-serif;
+      background: #FDFAF5;
+      color: #1A1714;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    h1 {
+      font-weight: 400;
+      font-size: 28px;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      font-weight: 300;
+      font-size: 16px;
+      color: #6B6459;
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    label {
+      display: block;
+      font-weight: 400;
+      font-size: 16px;
+      color: #6B6459;
+      margin-bottom: 8px;
+      margin-top: 20px;
+    }
+    input[type="text"], input[type="tel"] {
+      width: 100%;
+      padding: 16px;
+      font-family: 'Jost', sans-serif;
+      font-size: 18px;
+      border: 2px solid rgba(196, 169, 98, 0.3);
+      border-radius: 12px;
+      background: #fff;
+      color: #1A1714;
+      outline: none;
+    }
+    input:focus {
+      border-color: #C4A962;
+    }
+    .photo-area {
+      margin-top: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    .photo-preview {
+      width: 150px;
+      height: 150px;
+      border-radius: 12px;
+      border: 3px solid #F5F0E8;
+      background: #F5F0E8;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #6B6459;
+      font-size: 14px;
+    }
+    .photo-preview img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .photo-buttons {
+      display: flex;
+      gap: 12px;
+    }
+    .photo-btn {
+      font-family: 'Jost', sans-serif;
+      font-weight: 400;
+      font-size: 16px;
+      color: #C4A962;
+      background: #F5F0E8;
+      border: 2px solid rgba(196, 169, 98, 0.3);
+      border-radius: 10px;
+      padding: 12px 20px;
+      cursor: pointer;
+    }
+    .submit-btn {
+      width: 100%;
+      margin-top: 32px;
+      padding: 18px;
+      font-family: 'Jost', sans-serif;
+      font-weight: 500;
+      font-size: 20px;
+      color: #FDFAF5;
+      background: #C4A962;
+      border: none;
+      border-radius: 14px;
+      cursor: pointer;
+    }
+    .submit-btn:disabled {
+      background: rgba(196, 169, 98, 0.4);
+      color: #6B6459;
+    }
+    .success {
+      display: none;
+      text-align: center;
+      padding: 48px 24px;
+    }
+    .success h2 {
+      font-weight: 400;
+      font-size: 28px;
+      color: #C4A962;
+      margin-bottom: 16px;
+    }
+    .success p {
+      font-weight: 300;
+      font-size: 18px;
+      color: #6B6459;
+    }
+    .form-area { display: block; }
+    .vcard-section {
+      margin-top: 24px;
+      padding: 20px;
+      border: 2px dashed rgba(196, 169, 98, 0.3);
+      border-radius: 12px;
+      text-align: center;
+    }
+    .vcard-label {
+      font-size: 14px;
+      color: #6B6459;
+      margin-bottom: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="form-area" id="formArea">
+    <h1>Add Yourself to The Ken</h1>
+    <div class="subtitle">Fill in your details to appear on this device</div>
+
+    <div class="vcard-section">
+      <div class="vcard-label">Have a contact card (.vcf)?</div>
+      <input type="file" id="vcardInput" accept=".vcf,text/vcard" onchange="importVCard(event)" style="display:none;" />
+      <button class="photo-btn" onclick="document.getElementById('vcardInput').click()">Import Contact Card</button>
+    </div>
+
+    <label for="nameInput">Your Name *</label>
+    <input type="text" id="nameInput" placeholder="e.g. Sarah" autocomplete="name" />
+
+    <label for="relInput">Relationship</label>
+    <input type="text" id="relInput" placeholder="e.g. Daughter, Son, GP, Friend" />
+
+    <label for="phoneInput">Phone Number</label>
+    <input type="tel" id="phoneInput" placeholder="e.g. +44 7700 900001" autocomplete="tel" />
+
+    <div class="photo-area">
+      <label style="margin:0;">Your Photo</label>
+      <div class="photo-preview" id="photoPreview">No photo</div>
+      <div class="photo-buttons">
+        <input type="file" id="cameraInput" accept="image/*" capture="user" onchange="handlePhoto(event)" style="display:none;" />
+        <button class="photo-btn" onclick="document.getElementById('cameraInput').click()">Take Selfie</button>
+        <input type="file" id="galleryInput" accept="image/*" onchange="handlePhoto(event)" style="display:none;" />
+        <button class="photo-btn" onclick="document.getElementById('galleryInput').click()">Choose Photo</button>
+      </div>
+    </div>
+
+    <button class="submit-btn" id="submitBtn" onclick="submitContact()">Add Me to The Ken</button>
+  </div>
+
+  <div class="success" id="successArea">
+    <h2>You have been added</h2>
+    <p>Your contact now appears on The Ken. You can close this page.</p>
+  </div>
+
+  <script>
+    let photoBase64 = '';
+
+    function handlePhoto(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        photoBase64 = ev.target.result;
+        document.getElementById('photoPreview').innerHTML = '<img src="' + photoBase64 + '" />';
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function importVCard(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const text = ev.target.result;
+        // Parse basic vCard fields
+        const fnMatch = text.match(/FN[;:]([^\r\n]+)/);
+        const telMatch = text.match(/TEL[;:][^\r\n]*?([+\d][\d\s\-]+)/);
+
+        if (fnMatch) {
+          const name = fnMatch[1].replace(/^.*:/, '').trim();
+          document.getElementById('nameInput').value = name;
+        }
+        if (telMatch) {
+          document.getElementById('phoneInput').value = telMatch[1].trim();
+        }
+
+        // Try to extract photo from vCard
+        const photoMatch = text.match(/PHOTO;[^:]*:([^\r\n]+(?:\r?\n [^\r\n]+)*)/);
+        if (photoMatch) {
+          const base64 = photoMatch[1].replace(/\r?\n /g, '');
+          photoBase64 = 'data:image/jpeg;base64,' + base64;
+          document.getElementById('photoPreview').innerHTML = '<img src="' + photoBase64 + '" />';
+        }
+      };
+      reader.readAsText(file);
+    }
+
+    async function submitContact() {
+      const name = document.getElementById('nameInput').value.trim();
+      if (!name) { alert('Please enter your name'); return; }
+
+      const btn = document.getElementById('submitBtn');
+      btn.disabled = true;
+      btn.textContent = 'Adding...';
+
+      try {
+        const resp = await fetch('/api/contacts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name,
+            relationship: document.getElementById('relInput').value.trim(),
+            phoneNumber: document.getElementById('phoneInput').value.trim(),
+            photo: photoBase64 || ''
+          })
+        });
+        const data = await resp.json();
+        if (data.success) {
+          document.getElementById('formArea').style.display = 'none';
+          document.getElementById('successArea').style.display = 'block';
+        } else {
+          alert('Error: ' + (data.error || 'Unknown error'));
+          btn.disabled = false;
+          btn.textContent = 'Add Me to The Ken';
+        }
+      } catch (err) {
+        alert('Could not connect. Make sure you are on the same WiFi network.');
+        btn.disabled = false;
+        btn.textContent = 'Add Me to The Ken';
+      }
+    }
+  </script>
+</body>
+</html>

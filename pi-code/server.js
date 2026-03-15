@@ -1,0 +1,850 @@
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const PORT = 3000;
+const CONTACTS_FILE = path.join(__dirname, 'contacts.json');
+const MESSAGES_FILE = path.join(__dirname, 'messages.json');
+const PHOTOS_DIR = path.join(__dirname, 'photos');
+const DEVICE_ID_FILE = path.join(__dirname, '.device-id');
+const CONFIG_FILE = path.join(__dirname, 'config.json');
+function loadConfig() {
+  try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); }
+  catch { return {}; }
+}
+const config = loadConfig();
+const DAILY_API_KEY = config.dailyApiKey || 'e1cd1b212795aeb0696ab6aa7693150bae1e0f7ced7e8160cc56873d76070957';
+const CLOUD_API = config.cloudApi || 'https://ken-api.the-ken.workers.dev';
+const POLL_INTERVAL = 15000;
+const CALL_POLL_INTERVAL = 3000;
+const CALLS_FILE = path.join(__dirname, 'calls.json');
+const CALL_HISTORY_FILE = path.join(__dirname, 'call-history.json');
+const REMINDERS_FILE = path.join(__dirname, 'reminders.json');
+const VOICEMAILS_FILE = path.join(__dirname, 'voicemails.json');
+const PHOTOS_CAROUSEL_DIR = path.join(__dirname, 'photos-carousel');
+const SETTINGS_FILE = path.join(__dirname, 'settings.json');
+
+if (!fs.existsSync(PHOTOS_CAROUSEL_DIR)) fs.mkdirSync(PHOTOS_CAROUSEL_DIR);
+
+function readSettings() {
+  try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); }
+  catch { return {}; }
+}
+function writeSettings(data) {
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2));
+}
+
+// Call history tracking
+function readCallHistory() {
+  try { return JSON.parse(fs.readFileSync(CALL_HISTORY_FILE, 'utf8')); }
+  catch { return { calls: [] }; }
+}
+
+function logCall(type, contactName, roomUrl, status) {
+  const history = readCallHistory();
+  history.calls.push({
+    id: crypto.randomUUID(),
+    type, // 'outbound', 'inbound'
+    contactName,
+    roomUrl: roomUrl || '',
+    status, // 'connected', 'missed', 'rejected'
+    timestamp: new Date().toISOString()
+  });
+  // Keep last 100 calls
+  if (history.calls.length > 100) history.calls = history.calls.slice(-100);
+  fs.writeFileSync(CALL_HISTORY_FILE, JSON.stringify(history, null, 2));
+  // Sync to cloud
+  syncCallHistory();
+}
+
+async function syncCallHistory() {
+  try {
+    const history = readCallHistory();
+    await fetch(`${CLOUD_API}/api/history/${DEVICE_ID}/calls`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(history)
+    });
+  } catch {}
+}
+
+if (!fs.existsSync(PHOTOS_DIR)) fs.mkdirSync(PHOTOS_DIR);
+
+function getDeviceId() {
+  try {
+    return fs.readFileSync(DEVICE_ID_FILE, 'utf8').trim();
+  } catch {
+    const id = crypto.randomUUID();
+    fs.writeFileSync(DEVICE_ID_FILE, id);
+    console.log('Generated device ID:', id);
+    return id;
+  }
+}
+
+const DEVICE_ID = getDeviceId();
+
+function readContacts() {
+  try { return JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf8')); }
+  catch { return { contacts: [] }; }
+}
+
+function writeContacts(data) {
+  fs.writeFileSync(CONTACTS_FILE, JSON.stringify(data, null, 2));
+}
+
+function readMessages() {
+  try { return JSON.parse(fs.readFileSync(MESSAGES_FILE, 'utf8')); }
+  catch { return { messages: [] }; }
+}
+
+function writeMessages(data) {
+  fs.writeFileSync(MESSAGES_FILE, JSON.stringify(data, null, 2));
+}
+
+async function createDailyRoom(name) {
+  const roomName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  try {
+    const resp = await fetch('https://api.daily.co/v1/rooms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DAILY_API_KEY },
+      body: JSON.stringify({ name: roomName, privacy: 'public' })
+    });
+    const data = await resp.json();
+    return data.url || 'https://theken.daily.co/' + roomName;
+  } catch {
+    return 'https://theken.daily.co/' + roomName;
+  }
+}
+
+// Poll Cloudflare for pending contacts
+async function pollForContacts() {
+  try {
+    const resp = await fetch(`${CLOUD_API}/api/contacts/${DEVICE_ID}/pending`);
+    const data = await resp.json();
+    if (!data.contacts || data.contacts.length === 0) return;
+
+    console.log(`Found ${data.contacts.length} pending contact(s)`);
+    const contacts = readContacts();
+
+    for (const pending of data.contacts) {
+      const nextId = String(Math.max(0, ...contacts.contacts.map(c => parseInt(c.id))) + 1);
+      const nextPos = contacts.contacts.length + 1;
+
+      let photoPath = '';
+      if (pending.photo) {
+        const base64Data = pending.photo.replace(/^data:image\/\w+;base64,/, '');
+        const fileName = pending.name.toLowerCase().replace(/[^a-z0-9]/g, '') + '_' + Date.now() + '.jpg';
+        fs.writeFileSync(path.join(PHOTOS_DIR, fileName), base64Data, 'base64');
+        photoPath = './photos/' + fileName;
+      }
+
+      const dailyRoomUrl = await createDailyRoom(pending.name);
+
+      contacts.contacts.push({
+        id: nextId, name: pending.name, relationship: pending.relationship || '',
+        photo: photoPath, dailyRoomUrl, phoneNumber: pending.phoneNumber || '',
+        emergencyContact: false, position: nextPos
+      });
+
+      console.log(`Added contact: ${pending.name}`);
+    }
+
+    writeContacts(contacts);
+    await fetch(`${CLOUD_API}/api/contacts/${DEVICE_ID}/ack`, { method: 'POST' });
+    syncContactsToCloud();
+    console.log('Contacts synced and acknowledged');
+  } catch (err) {
+    // Silent fail — will retry next interval
+  }
+}
+
+// Poll Cloudflare for pending messages
+async function pollForMessages() {
+  try {
+    const resp = await fetch(`${CLOUD_API}/api/messages/${DEVICE_ID}/pending`);
+    const data = await resp.json();
+    if (!data.messages || data.messages.length === 0) return;
+
+    console.log(`Found ${data.messages.length} pending message(s)`);
+    const store = readMessages();
+
+    for (const msg of data.messages) {
+      store.messages.push({
+        id: msg.id,
+        from: msg.from,
+        text: msg.text,
+        sentAt: msg.sentAt,
+        read: false
+      });
+      console.log(`New message from ${msg.from}: ${msg.text.substring(0, 40)}...`);
+    }
+
+    // Keep last 50 messages
+    if (store.messages.length > 50) {
+      store.messages = store.messages.slice(-50);
+    }
+
+    writeMessages(store);
+    await fetch(`${CLOUD_API}/api/messages/${DEVICE_ID}/ack`, { method: 'POST' });
+    console.log('Messages synced and acknowledged');
+  } catch (err) {
+    // Silent fail — will retry next interval
+  }
+}
+
+// Sync contacts to cloud (so family portal can see them)
+async function syncContactsToCloud() {
+  try {
+    const contacts = readContacts();
+    // Send name, relationship, and position only (not photos or API keys)
+    const safeContacts = (contacts.contacts || []).map(c => ({
+      name: c.name, relationship: c.relationship || '', position: c.position,
+      phoneNumber: c.phoneNumber || ''
+    }));
+    await fetch(`${CLOUD_API}/api/contacts/${DEVICE_ID}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contacts: safeContacts })
+    });
+  } catch {}
+}
+
+// Register device room with cloud on startup
+let deviceRoomUrl = '';
+async function ensureDeviceRoom() {
+  const roomName = 'ken-' + DEVICE_ID.substring(0, 8);
+  try {
+    const resp = await fetch('https://api.daily.co/v1/rooms/' + roomName, {
+      headers: { 'Authorization': 'Bearer ' + DAILY_API_KEY }
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      deviceRoomUrl = data.url;
+    } else {
+      // Create the room
+      const createResp = await fetch('https://api.daily.co/v1/rooms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DAILY_API_KEY },
+        body: JSON.stringify({ name: roomName, privacy: 'public' })
+      });
+      const data = await createResp.json();
+      deviceRoomUrl = data.url || 'https://theken.daily.co/' + roomName;
+    }
+    console.log('Device room URL:', deviceRoomUrl);
+    // Register with cloud
+    await fetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/room`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roomUrl: deviceRoomUrl })
+    });
+    console.log('Room registered with cloud');
+  } catch (err) {
+    console.error('Room setup failed:', err.message);
+    deviceRoomUrl = 'https://theken.daily.co/' + roomName;
+  }
+}
+
+// Track current incoming call
+let currentIncomingCall = null;
+
+// Poll for incoming calls (faster interval — 3s)
+async function pollForCalls() {
+  try {
+    const resp = await fetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/pending`);
+    const data = await resp.json();
+    if (data.call && (!currentIncomingCall || currentIncomingCall.id !== data.call.id)) {
+      currentIncomingCall = data.call;
+      console.log(`Incoming call from ${data.call.from}`);
+      // Write to calls.json so the Electron frontend can pick it up
+      fs.writeFileSync(CALLS_FILE, JSON.stringify(data.call, null, 2));
+    }
+  } catch {
+    // Silent fail
+  }
+}
+
+// Heartbeat — tell cloud we're online every 60s
+async function sendHeartbeat() {
+  try {
+    await fetch(`${CLOUD_API}/api/heartbeat/${DEVICE_ID}`, { method: 'POST' });
+  } catch {}
+}
+
+// Register device info with cloud
+async function registerDeviceInfo() {
+  try {
+    // Read localStorage isn't possible from Node, so we expose an API for the frontend
+    await fetch(`${CLOUD_API}/api/device/${DEVICE_ID}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userName: 'The Ken', deviceId: DEVICE_ID })
+    });
+  } catch {}
+}
+
+// ===== PHOTOS CAROUSEL POLLING =====
+function readReminders() {
+  try { return JSON.parse(fs.readFileSync(REMINDERS_FILE, 'utf8')); }
+  catch { return { reminders: [] }; }
+}
+
+function writeReminders(data) {
+  fs.writeFileSync(REMINDERS_FILE, JSON.stringify(data, null, 2));
+}
+
+function readVoicemails() {
+  try { return JSON.parse(fs.readFileSync(VOICEMAILS_FILE, 'utf8')); }
+  catch { return { voicemails: [] }; }
+}
+
+function writeVoicemails(data) {
+  fs.writeFileSync(VOICEMAILS_FILE, JSON.stringify(data, null, 2));
+}
+
+async function pollForPhotos() {
+  try {
+    const resp = await fetch(`${CLOUD_API}/api/photos/${DEVICE_ID}`);
+    const data = await resp.json();
+    const photos = data.photos || [];
+
+    // Read existing cached photo IDs
+    const existingFiles = fs.readdirSync(PHOTOS_CAROUSEL_DIR);
+    const existingIds = new Set(existingFiles.map(f => f.replace(/\.\w+$/, '')));
+
+    // Remove photos that are no longer in cloud
+    const cloudIds = new Set(photos.map(p => p.id));
+    for (const file of existingFiles) {
+      const fileId = file.replace(/\.\w+$/, '');
+      if (!cloudIds.has(fileId)) {
+        try { fs.unlinkSync(path.join(PHOTOS_CAROUSEL_DIR, file)); } catch {}
+      }
+    }
+
+    // Download new photos
+    for (const photo of photos) {
+      if (!existingIds.has(photo.id) && photo.photo) {
+        const base64Data = photo.photo.replace(/^data:image\/\w+;base64,/, '');
+        const ext = photo.photo.startsWith('data:image/png') ? 'png' : 'jpg';
+        fs.writeFileSync(path.join(PHOTOS_CAROUSEL_DIR, photo.id + '.' + ext), base64Data, 'base64');
+      }
+    }
+
+    // Write metadata
+    const meta = photos.map(p => ({
+      id: p.id,
+      caption: p.caption || '',
+      uploadedAt: p.uploadedAt
+    }));
+    fs.writeFileSync(path.join(PHOTOS_CAROUSEL_DIR, '_meta.json'), JSON.stringify(meta, null, 2));
+  } catch (err) {
+    // Silent fail
+  }
+}
+
+async function pollForReminders() {
+  try {
+    const resp = await fetch(`${CLOUD_API}/api/reminders/${DEVICE_ID}`);
+    const data = await resp.json();
+    writeReminders({ reminders: data.reminders || [] });
+  } catch {
+    // Silent fail
+  }
+}
+
+async function pollForVoicemails() {
+  try {
+    const resp = await fetch(`${CLOUD_API}/api/voicemail/${DEVICE_ID}`);
+    const data = await resp.json();
+    writeVoicemails({ voicemails: data.voicemails || [] });
+  } catch {
+    // Silent fail
+  }
+}
+
+// Poll cloud for settings changes (from portal)
+async function pollForSettings() {
+  try {
+    const resp = await fetch(`${CLOUD_API}/api/settings/${DEVICE_ID}`);
+    const data = await resp.json();
+    const current = readSettings();
+    // Only write if something actually changed
+    if (JSON.stringify(data) !== JSON.stringify(current)) {
+      writeSettings(data);
+      console.log('Settings updated from cloud');
+    }
+  } catch {}
+}
+
+// Check for queued settings changes (applied when device comes back online)
+async function pollForSettingsQueue() {
+  try {
+    const resp = await fetch(`${CLOUD_API}/api/settings/${DEVICE_ID}/queue`);
+    const data = await resp.json();
+    if (data.queue && data.queue.length > 0) {
+      const settings = readSettings();
+      for (const item of data.queue) {
+        if (item.setting && item.value !== undefined) {
+          settings[item.setting] = item.value;
+          console.log(`Applied queued setting: ${item.setting} = ${item.value}`);
+        }
+      }
+      writeSettings(settings);
+      // Push merged settings back to cloud
+      await fetch(`${CLOUD_API}/api/settings/${DEVICE_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings)
+      });
+      // ACK the queue
+      await fetch(`${CLOUD_API}/api/settings/${DEVICE_ID}/queue/ack`, { method: 'POST' });
+      console.log(`Applied ${data.queue.length} queued settings`);
+    }
+  } catch {}
+}
+
+// Poll cloud for offline alert settings
+async function pollForOfflineAlertSettings() {
+  try {
+    const resp = await fetch(`${CLOUD_API}/api/settings/${DEVICE_ID}/offline-alerts`);
+    const data = await resp.json();
+    // Store locally so frontend can use it
+    const settings = readSettings();
+    settings.offlineAlerts = data;
+    writeSettings(settings);
+  } catch {}
+}
+
+// Start polling
+setInterval(pollForContacts, POLL_INTERVAL);
+setInterval(pollForMessages, POLL_INTERVAL);
+setInterval(pollForCalls, CALL_POLL_INTERVAL);
+setInterval(sendHeartbeat, 60000);
+setInterval(pollForPhotos, 60000);
+setInterval(pollForReminders, 60000);
+setInterval(pollForVoicemails, 30000);
+setInterval(pollForSettings, 30000);
+setInterval(pollForSettingsQueue, 60000);
+setInterval(pollForOfflineAlertSettings, 60000);
+pollForContacts();
+pollForMessages();
+pollForPhotos();
+pollForReminders();
+pollForVoicemails();
+pollForSettings();
+pollForSettingsQueue();
+sendHeartbeat();
+ensureDeviceRoom();
+syncContactsToCloud();
+
+const server = http.createServer(async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
+
+  // Return device ID
+  if (req.method === 'GET' && req.url === '/api/device-id') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ deviceId: DEVICE_ID, cloudUrl: CLOUD_API }));
+    return;
+  }
+
+  // Return current settings (for Electron frontend)
+  if (req.method === 'GET' && req.url === '/api/settings') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(readSettings()));
+    return;
+  }
+
+  // Call history
+  if (req.method === 'GET' && req.url === '/api/calls/history') {
+    const history = readCallHistory();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(history));
+    return;
+  }
+
+  // Log a call (from Electron frontend)
+  if (req.method === 'POST' && req.url === '/api/calls/log') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { type, contactName, roomUrl, status } = JSON.parse(body);
+        logCall(type, contactName, roomUrl || '', status || 'connected');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
+  // Screen brightness control (for nightlight mode)
+  if (req.method === 'POST' && req.url === '/api/brightness') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { brightness } = JSON.parse(body);
+        // Set backlight brightness on Pi (0-255)
+        const val = Math.max(10, Math.min(255, Math.round(brightness * 2.55)));
+        const blPath = '/sys/class/backlight/rpi_backlight/brightness';
+        if (fs.existsSync(blPath)) {
+          fs.writeFileSync(blPath, String(val));
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, brightness: val }));
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
+  // Return messages (for Electron frontend)
+  if (req.method === 'GET' && req.url === '/api/messages') {
+    const store = readMessages();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(store));
+    return;
+  }
+
+  // Return pending incoming call (for Electron frontend)
+  if (req.method === 'GET' && req.url === '/api/calls/pending') {
+    try {
+      const callData = fs.existsSync(CALLS_FILE) ? JSON.parse(fs.readFileSync(CALLS_FILE, 'utf8')) : null;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ call: callData, roomUrl: deviceRoomUrl }));
+    } catch {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ call: null, roomUrl: deviceRoomUrl }));
+    }
+    return;
+  }
+
+  // Acknowledge/clear the incoming call (with optional voicemail signal)
+  if (req.method === 'POST' && (req.url === '/api/calls/ack' || req.url.startsWith('/api/calls/ack?'))) {
+    const urlObj = new URL(req.url, 'http://localhost:3000');
+    const sendVoicemail = urlObj.searchParams.get('voicemail') === 'true';
+    currentIncomingCall = null;
+    try { fs.unlinkSync(CALLS_FILE); } catch {}
+    // Also clear cloud signal
+    fetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/ack`, { method: 'POST' }).catch(() => {});
+    // If voicemail=true, also signal voicemail to cloud
+    if (sendVoicemail) {
+      fetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/voicemail`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: '' })
+      }).catch(() => {});
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+    return;
+  }
+
+  // Return device room URL
+  if (req.method === 'GET' && req.url === '/api/calls/room') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ roomUrl: deviceRoomUrl }));
+    return;
+  }
+
+  // Signal outbound call (Ken is calling someone — notify family portal)
+  if (req.method === 'POST' && req.url === '/api/calls/outbound') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { contactName, roomUrl } = JSON.parse(body);
+        await fetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/outbound`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contactName, roomUrl })
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
+  // Clear outbound call signal (call ended)
+  if (req.method === 'POST' && req.url === '/api/calls/outbound/clear') {
+    fetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/outbound/clear`, { method: 'POST' }).catch(() => {});
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+    return;
+  }
+
+  // Update device info in cloud (called by Electron frontend)
+  if (req.method === 'POST' && req.url === '/api/device/info') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const info = JSON.parse(body);
+        await fetch(`${CLOUD_API}/api/device/${DEVICE_ID}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(info)
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
+  // Mark message as read
+  if (req.method === 'POST' && req.url.match(/^\/api\/messages\/[\w-]+\/read$/)) {
+    const msgId = req.url.split('/')[3];
+    const store = readMessages();
+    const msg = store.messages.find(m => m.id === msgId);
+    if (msg) { msg.read = true; writeMessages(store); }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+    return;
+  }
+
+  // Serve add-contact form (local fallback)
+  if (req.method === 'GET' && (req.url === '/' || req.url === '/add-contact')) {
+    fs.readFile(path.join(__dirname, 'add-contact.html'), (err, data) => {
+      if (err) { res.writeHead(500); res.end('Error'); return; }
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(data);
+    });
+    return;
+  }
+
+  // Add new contact (local)
+  if (req.method === 'POST' && req.url === '/api/contacts') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { name, relationship, phoneNumber, photo } = JSON.parse(body);
+        if (!name) { res.writeHead(400); res.end(JSON.stringify({ error: 'Name required' })); return; }
+
+        const contacts = readContacts();
+        const nextId = String(Math.max(0, ...contacts.contacts.map(c => parseInt(c.id))) + 1);
+        const nextPos = contacts.contacts.length + 1;
+
+        let photoPath = '';
+        if (photo) {
+          const base64Data = photo.replace(/^data:image\/\w+;base64,/, '');
+          const fileName = name.toLowerCase().replace(/[^a-z0-9]/g, '') + '_' + Date.now() + '.jpg';
+          fs.writeFileSync(path.join(PHOTOS_DIR, fileName), base64Data, 'base64');
+          photoPath = './photos/' + fileName;
+        }
+
+        const dailyRoomUrl = await createDailyRoom(name);
+
+        const newContact = {
+          id: nextId, name, relationship: relationship || '',
+          photo: photoPath, dailyRoomUrl, phoneNumber: phoneNumber || '',
+          emergencyContact: false, position: nextPos
+        };
+
+        contacts.contacts.push(newContact);
+        writeContacts(contacts);
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, contact: newContact }));
+      } catch (err) {
+        res.writeHead(500);
+        res.end(JSON.stringify({ error: 'Failed to add contact' }));
+      }
+    });
+    return;
+  }
+
+  // Return cached carousel photos
+  if (req.method === 'GET' && req.url === '/api/photos') {
+    try {
+      const metaPath = path.join(PHOTOS_CAROUSEL_DIR, '_meta.json');
+      const meta = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : [];
+      const photos = [];
+      for (const item of meta) {
+        // Find the file for this photo
+        const files = fs.readdirSync(PHOTOS_CAROUSEL_DIR).filter(f => f.startsWith(item.id) && !f.endsWith('.json'));
+        if (files.length > 0) {
+          photos.push({
+            id: item.id,
+            caption: item.caption || '',
+            url: '/api/photos/file/' + files[0]
+          });
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ photos }));
+    } catch {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ photos: [] }));
+    }
+    return;
+  }
+
+  // Serve a carousel photo file
+  if (req.method === 'GET' && req.url.startsWith('/api/photos/file/')) {
+    const fileName = req.url.split('/').pop();
+    const filePath = path.join(PHOTOS_CAROUSEL_DIR, fileName);
+    if (fs.existsSync(filePath)) {
+      const ext = path.extname(fileName).toLowerCase();
+      const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
+      res.writeHead(200, { 'Content-Type': mime });
+      res.end(fs.readFileSync(filePath));
+    } else {
+      res.writeHead(404);
+      res.end('Not found');
+    }
+    return;
+  }
+
+  // Return reminders
+  if (req.method === 'GET' && req.url === '/api/reminders') {
+    const data = readReminders();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+    return;
+  }
+
+  // Signal voicemail to cloud
+  if (req.method === 'POST' && req.url === '/api/calls/voicemail') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { from } = JSON.parse(body);
+        await fetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/voicemail`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: from || '' })
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
+  // Return cached voicemails for frontend
+  if (req.method === 'GET' && req.url === '/api/voicemails') {
+    const data = readVoicemails();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(data));
+    return;
+  }
+
+  // WiFi info
+  if (req.method === 'GET' && req.url === '/api/wifi') {
+    const { execSync } = require('child_process');
+    try {
+      const iwconfig = execSync('iwconfig wlan0 2>/dev/null || echo ""', { encoding: 'utf8' });
+      const ssidMatch = iwconfig.match(/ESSID:"([^"]+)"/);
+      const qualityMatch = iwconfig.match(/Link Quality=(\d+)\/(\d+)/);
+      const ssid = ssidMatch ? ssidMatch[1] : '';
+      let strength = '';
+      if (qualityMatch) {
+        const pct = Math.round((parseInt(qualityMatch[1]) / parseInt(qualityMatch[2])) * 100);
+        strength = pct >= 70 ? 'Strong' : pct >= 40 ? 'Fair' : 'Weak';
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ssid, strength }));
+    } catch {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ssid: '', strength: '' }));
+    }
+    return;
+  }
+
+  // WiFi scan
+  if (req.method === 'GET' && req.url === '/api/wifi/scan') {
+    const { execSync } = require('child_process');
+    try {
+      const scan = execSync('nmcli -t -f SSID,SIGNAL dev wifi list 2>/dev/null || echo ""', { encoding: 'utf8' });
+      const networks = scan.split('\n').filter(l => l.trim()).map(l => {
+        const [ssid, signal] = l.split(':');
+        return { ssid: ssid || '', signal: signal ? signal + '%' : '' };
+      }).filter(n => n.ssid);
+      // Deduplicate by SSID, keep strongest
+      const seen = {};
+      for (const n of networks) {
+        if (!seen[n.ssid] || parseInt(n.signal) > parseInt(seen[n.ssid].signal)) {
+          seen[n.ssid] = n;
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ networks: Object.values(seen) }));
+    } catch {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ networks: [] }));
+    }
+    return;
+  }
+
+  // WiFi connect
+  if (req.method === 'POST' && req.url === '/api/wifi/connect') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      const { execSync } = require('child_process');
+      try {
+        const { ssid, password } = JSON.parse(body);
+        execSync(`nmcli dev wifi connect "${ssid}" password "${password}" 2>&1`, { encoding: 'utf8', timeout: 15000 });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch (err) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: err.message || 'Connection failed' }));
+      }
+    });
+    return;
+  }
+
+  // Network info (IP address)
+  if (req.method === 'GET' && req.url === '/api/network-info') {
+    const os = require('os');
+    const interfaces = os.networkInterfaces();
+    let ip = '—';
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          ip = iface.address;
+          break;
+        }
+      }
+      if (ip !== '—') break;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ip }));
+    return;
+  }
+
+  res.writeHead(404);
+  res.end('Not found');
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('Contact server running on port ' + PORT);
+  console.log('Device ID:', DEVICE_ID);
+  console.log('Cloud API:', CLOUD_API);
+  console.log('Polling every ' + (POLL_INTERVAL / 1000) + 's for contacts and messages');
+});
+
+module.exports = server;
