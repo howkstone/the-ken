@@ -3037,11 +3037,12 @@
     <div class="vm-notif-icon">
       <svg viewBox="0 0 24 24"><path d="M18.92 14.32C17.28 14.32 15.74 13.95 14.32 13.28c-.25-.11-.54-.05-.73.15l-2.16 2.16c-2.77-1.44-5.02-3.69-6.46-6.46l2.16-2.16c.2-.2.26-.49.15-.73C6.61 4.86 6.24 3.32 6.24 1.68 6.24.75 5.49 0 4.56 0H1.68C.75 0 0 .75 0 1.68c0 12.33 10.07 22.4 22.4 22.4.93 0 1.68-.75 1.68-1.68V15.92c0-.93-.75-1.68-1.68-1.68z"/><circle cx="18" cy="6" r="5" fill="#C4A962"/><path d="M17 4v3l2.5 1.5" stroke="#FDFAF5" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
     </div>
-    <div class="vm-notif-label">New Voicemail</div>
-    <div class="vm-notif-from" id="vmNotifFrom">Sarah</div>
+    <div class="vm-notif-label" id="vmNotifLabel">Someone has left you a Voicemail</div>
+    <div class="vm-notif-from" id="vmNotifFrom" style="display:none;"></div>
     <div class="vm-notif-badge" id="vmNotifBadge">Video Voicemail</div>
+    <div class="vm-notif-sub" style="font-size:22px;color:#6B6459;margin-top:8px;">You can view this later in their Contact Card</div>
     <div class="vm-notif-actions">
-      <button class="answer-btn" onclick="playVoicemail()" style="min-width:280px;">Play</button>
+      <button class="answer-btn" onclick="playVoicemail()" style="min-width:280px;">Yes</button>
       <button class="reject-btn" onclick="dismissVmNotif()">Later</button>
     </div>
   </div>
@@ -5253,15 +5254,29 @@
     const SLIDE_INTERVAL = 8000; // 8 seconds
 
     // Track user interaction to reset idle timer
+    let wasIdle = false;
     function resetIdleTimer() {
+      const wasIdleBefore = wasIdle;
+      wasIdle = false;
       lastInteractionTime = Date.now();
       if (slideshowActive) {
         dismissSlideshow();
+      }
+      // When coming back from idle, check for voicemail notifications after 1 second
+      if (wasIdleBefore) {
+        setTimeout(checkVoicemailNotifications, 1000);
       }
     }
 
     document.addEventListener('click', resetIdleTimer);
     document.addEventListener('touchstart', resetIdleTimer);
+
+    // Mark as idle when idle timeout fires
+    setInterval(() => {
+      if (Date.now() - lastInteractionTime > IDLE_TIMEOUT) {
+        wasIdle = true;
+      }
+    }, 5000);
 
     async function fetchSlideshowPhotos() {
       try {
@@ -5868,72 +5883,113 @@
     // ===== VOICEMAIL POLLING & PLAYBACK =====
     let knownVoicemailIds = new Set();
     let currentVoicemail = null;
-    let vmInitialized = false;
+    let vmNotificationQueue = [];
 
-    async function pollVoicemails() {
+    // Check for voicemail notifications (called when coming off idle)
+    async function checkVoicemailNotifications() {
       try {
-        const resp = await fetch('http://localhost:3000/api/voicemails');
+        const resp = await fetch('http://localhost:3000/api/voicemails/notifications');
         const data = await resp.json();
-        const voicemails = data.voicemails || [];
-
-        if (!vmInitialized) {
-          // On first load, just track existing IDs without notifying
-          voicemails.forEach(vm => knownVoicemailIds.add(vm.id));
-          vmInitialized = true;
-          return;
-        }
-
-        // Check for new voicemails
-        for (const vm of voicemails) {
-          if (!knownVoicemailIds.has(vm.id)) {
-            knownVoicemailIds.add(vm.id);
-            // Don't interrupt active calls
-            const callingActive = document.getElementById('callingScreen').classList.contains('active');
-            const callActive = document.getElementById('callScreen').classList.contains('active');
-            const incomingActive = document.getElementById('incomingScreen').classList.contains('active');
-            if (!callingActive && !callActive && !incomingActive) {
-              showVoicemailNotification(vm);
-            }
-          }
+        const notifications = data.notifications || [];
+        if (notifications.length > 0) {
+          vmNotificationQueue = notifications.slice();
+          showNextVoicemailNotification();
         }
       } catch {}
     }
 
+    function showNextVoicemailNotification() {
+      if (vmNotificationQueue.length === 0) return;
+      // Don't interrupt active calls
+      const callingActive = document.getElementById('callingScreen').classList.contains('active');
+      const callActive = document.getElementById('callScreen').classList.contains('active');
+      const incomingActive = document.getElementById('incomingScreen').classList.contains('active');
+      if (callingActive || callActive || incomingActive) return;
+
+      const vm = vmNotificationQueue.shift();
+      showVoicemailNotification(vm);
+    }
+
     function showVoicemailNotification(vm) {
       currentVoicemail = vm;
-      document.getElementById('vmNotifFrom').textContent = vm.from || 'Unknown';
-      document.getElementById('vmNotifBadge').textContent = vm.type === 'video' ? 'Video Voicemail' : 'Voice Message';
+      // Look up contact relationship
+      const contact = contacts.find(c => c.name === vm.from);
+      const relationship = contact && contact.relationship ? ' (' + contact.relationship + ')' : '';
+      const typeLabel = vm.type === 'video' ? 'Video Voicemail' : 'Voicemail';
+
+      document.getElementById('vmNotifFrom').textContent = (vm.from || 'Someone') + relationship;
+      document.getElementById('vmNotifBadge').textContent = typeLabel;
+
+      // Update the notification text
+      const label = document.getElementById('vmNotifLabel');
+      if (label) {
+        label.textContent = (vm.from || 'Someone') + relationship + ' has left you a ' + typeLabel;
+      }
+
       showScreen('vmNotification');
     }
 
     function dismissVmNotif() {
+      // Tell server this notification was dismissed ("Later")
+      if (currentVoicemail) {
+        fetch('http://localhost:3000/api/voicemails/dismiss', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: currentVoicemail.id })
+        }).catch(() => {});
+      }
       currentVoicemail = null;
       showScreen('home');
+      // Show next notification if queued
+      if (vmNotificationQueue.length > 0) {
+        setTimeout(showNextVoicemailNotification, 1500);
+      }
     }
 
     function playVoicemail() {
       if (!currentVoicemail) return;
       const vm = currentVoicemail;
 
-      if (vm.type === 'video') {
-        document.getElementById('vmPlaybackVideo').style.display = 'block';
-        document.getElementById('vmPlaybackAudioViz').style.display = 'none';
-        document.getElementById('vmPlaybackAudio').style.display = 'none';
-        document.getElementById('vmPlaybackVideo').src = vm.media;
-      } else {
-        document.getElementById('vmPlaybackVideo').style.display = 'none';
-        document.getElementById('vmPlaybackAudioViz').style.display = 'flex';
-        document.getElementById('vmPlaybackAudio').style.display = 'none';
-        document.getElementById('vmPlaybackName').textContent = vm.from || 'Unknown';
-        document.getElementById('vmPlaybackAudio').src = vm.media;
-        // Stop pulse animation when audio ends
-        document.getElementById('vmPlaybackAudio').onended = () => {
-          const bars = document.querySelectorAll('.vm-playback-bar');
-          bars.forEach(b => b.style.animationPlayState = 'paused');
-        };
-      }
+      // Get full voicemail data (with media) from local storage
+      fetch('http://localhost:3000/api/voicemails')
+        .then(r => r.json())
+        .then(data => {
+          const fullVm = (data.voicemails || []).find(v => v.id === vm.id);
+          if (!fullVm || !fullVm.media) {
+            alert('Voicemail not available yet. Please try again.');
+            showScreen('home');
+            return;
+          }
 
-      showScreen('vmPlayback');
+          if (fullVm.type === 'video') {
+            document.getElementById('vmPlaybackVideo').style.display = 'block';
+            document.getElementById('vmPlaybackAudioViz').style.display = 'none';
+            document.getElementById('vmPlaybackAudio').style.display = 'none';
+            document.getElementById('vmPlaybackVideo').src = fullVm.media;
+          } else {
+            document.getElementById('vmPlaybackVideo').style.display = 'none';
+            document.getElementById('vmPlaybackAudioViz').style.display = 'flex';
+            document.getElementById('vmPlaybackAudio').style.display = 'none';
+            document.getElementById('vmPlaybackName').textContent = fullVm.from || 'Unknown';
+            document.getElementById('vmPlaybackAudio').src = fullVm.media;
+            document.getElementById('vmPlaybackAudio').onended = () => {
+              const bars = document.querySelectorAll('.vm-playback-bar');
+              bars.forEach(b => b.style.animationPlayState = 'paused');
+            };
+          }
+
+          // Mark as watched
+          fetch('http://localhost:3000/api/voicemails/watched', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: vm.id })
+          }).catch(() => {});
+
+          showScreen('vmPlayback');
+        })
+        .catch(() => {
+          showScreen('home');
+        });
     }
 
     function closeVmPlayback() {
@@ -5941,12 +5997,18 @@
       document.getElementById('vmPlaybackVideo').src = '';
       document.getElementById('vmPlaybackAudio').pause();
       document.getElementById('vmPlaybackAudio').src = '';
-      // Reset pulse animation
       const bars = document.querySelectorAll('.vm-playback-bar');
       bars.forEach(b => b.style.animationPlayState = 'running');
       currentVoicemail = null;
       showScreen('home');
+      // Show next queued notification
+      if (vmNotificationQueue.length > 0) {
+        setTimeout(showNextVoicemailNotification, 1500);
+      }
     }
+
+    // Also check on boot for any unplayed voicemails
+    setTimeout(checkVoicemailNotifications, 5000);
 
     // Poll for voicemails every 10 seconds
     setInterval(pollVoicemails, 10000);

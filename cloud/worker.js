@@ -62,17 +62,94 @@ export default {
     if (request.method === 'POST' && path === '/api/auth/login') {
       try {
         const body = await request.json();
-        const { email, password } = body;
+        const { email, password, totpCode } = body;
         if (!email || !password) return json({ error: 'Email and password are required' }, 400);
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (!user) return json({ error: 'Invalid email or password' }, 401);
         const hash = await hashPassword(password);
         if (hash !== user.passwordHash) return json({ error: 'Invalid email or password' }, 401);
+        // Check MFA
+        if (user.mfaEnabled && user.mfaSecret) {
+          if (!totpCode) {
+            return json({ mfaRequired: true, error: 'MFA code required' }, 403);
+          }
+          // Try TOTP first, then backup codes
+          const validTotp = await verifyTOTP(user.mfaSecret, totpCode);
+          if (!validTotp) {
+            // Check backup codes
+            const backupIdx = (user.mfaBackupCodes || []).indexOf(totpCode);
+            if (backupIdx === -1) return json({ error: 'Invalid MFA code' }, 401);
+            // Consume the backup code
+            user.mfaBackupCodes.splice(backupIdx, 1);
+            await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+          }
+        }
         const token = crypto.randomUUID();
         await env.KEN_KV.put(`session:${token}`, JSON.stringify({ email: user.email, token, createdAt: new Date().toISOString() }), { expirationTtl: 2592000 });
         const headers = { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Set-Cookie': `ken_session=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000` };
         return new Response(JSON.stringify({ success: true }), { headers });
       } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== MFA SETUP =====
+    if (request.method === 'POST' && path === '/api/auth/mfa/setup') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const secret = generateTOTPSecret();
+      // Store pending secret (not yet confirmed)
+      auth.user.mfaPendingSecret = secret;
+      await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+      const otpauth = `otpauth://totp/TheKen:${encodeURIComponent(auth.user.email)}?secret=${secret}&issuer=TheKen&digits=6&period=30`;
+      return json({ secret, otpauth });
+    }
+
+    if (request.method === 'POST' && path === '/api/auth/mfa/confirm') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      try {
+        const body = await request.json();
+        const { code } = body;
+        if (!code || !auth.user.mfaPendingSecret) return json({ error: 'No pending MFA setup or missing code' }, 400);
+        const valid = await verifyTOTP(auth.user.mfaPendingSecret, code);
+        if (!valid) return json({ error: 'Invalid code. Please try again.' }, 400);
+        // Activate MFA
+        auth.user.mfaEnabled = true;
+        auth.user.mfaSecret = auth.user.mfaPendingSecret;
+        delete auth.user.mfaPendingSecret;
+        // Generate backup codes
+        const backupCodes = Array.from({ length: 8 }, () => crypto.randomUUID().slice(0, 8));
+        auth.user.mfaBackupCodes = backupCodes;
+        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+        const deviceIds = Object.keys(auth.user.devices || {});
+        if (deviceIds[0]) await logAudit(env, deviceIds[0], auth.user.email, 'Enabled MFA', {});
+        return json({ success: true, backupCodes });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    if (request.method === 'POST' && path === '/api/auth/mfa/disable') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      try {
+        const body = await request.json();
+        const { password } = body;
+        if (!password) return json({ error: 'Password required to disable MFA' }, 400);
+        const hash = await hashPassword(password);
+        if (hash !== auth.user.passwordHash) return json({ error: 'Invalid password' }, 401);
+        auth.user.mfaEnabled = false;
+        delete auth.user.mfaSecret;
+        delete auth.user.mfaPendingSecret;
+        delete auth.user.mfaBackupCodes;
+        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+        const deviceIds = Object.keys(auth.user.devices || {});
+        if (deviceIds[0]) await logAudit(env, deviceIds[0], auth.user.email, 'Disabled MFA', {});
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    if (request.method === 'GET' && path === '/api/auth/mfa/status') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      return json({ mfaEnabled: !!auth.user.mfaEnabled });
     }
 
     if (request.method === 'POST' && path === '/api/auth/logout') {
@@ -91,7 +168,7 @@ export default {
       const deviceIds = Object.keys(user.devices || {});
       const firstDevice = deviceIds[0] || null;
       const role = firstDevice && user.devices[firstDevice] ? user.devices[firstDevice].role : 'standard';
-      return json({ user: { email: user.email, name: user.name, phone: user.phone, photo: user.photo, role, devices: user.devices, deviceId: firstDevice } });
+      return json({ user: { email: user.email, name: user.name, phone: user.phone, photo: user.photo, role, devices: user.devices, deviceId: firstDevice, mfaEnabled: !!user.mfaEnabled } });
     }
 
     if (request.method === 'GET' && path.match(/^\/api\/auth\/permissions\/[\w-]+$/)) {
@@ -729,6 +806,52 @@ export default {
       const filtered = voicemails.filter(v => v.id !== vmId);
       await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(filtered));
       return json({ success: true });
+    }
+
+    // Mark voicemail as delivered (Pi calls this when it picks up a new voicemail)
+    if (request.method === 'POST' && path.match(/^\/api\/voicemail\/[\w-]+\/[\w-]+\/delivered$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const vmId = parts[4];
+      const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+      const vm = voicemails.find(v => v.id === vmId);
+      if (vm) {
+        vm.delivered = true;
+        vm.deliveredAt = new Date().toISOString();
+        await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
+      }
+      return json({ success: true });
+    }
+
+    // Mark voicemail as watched (Pi calls this when user plays it)
+    if (request.method === 'POST' && path.match(/^\/api\/voicemail\/[\w-]+\/[\w-]+\/watched$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const vmId = parts[4];
+      const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+      const vm = voicemails.find(v => v.id === vmId);
+      if (vm) {
+        vm.played = true;
+        vm.playedAt = new Date().toISOString();
+        await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
+      }
+      return json({ success: true });
+    }
+
+    // Read receipts preference per device
+    if (request.method === 'POST' && path.match(/^\/api\/voicemail\/[\w-]+\/read-receipts$/)) {
+      const deviceId = path.split('/')[3];
+      try {
+        const body = await request.json();
+        await env.KEN_KV.put(`vm-read-receipts:${deviceId}`, JSON.stringify({ enabled: !!body.enabled }));
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    if (request.method === 'GET' && path.match(/^\/api\/voicemail\/[\w-]+\/read-receipts$/)) {
+      const deviceId = path.split('/')[3];
+      const pref = await env.KEN_KV.get(`vm-read-receipts:${deviceId}`, 'json');
+      return json(pref || { enabled: false });
     }
 
     return new Response('Not found', { status: 404 });
@@ -2813,6 +2936,61 @@ async function requireAdmin(request, env, deviceId) {
   const role = auth.user.devices && auth.user.devices[deviceId] && auth.user.devices[deviceId].role;
   if (role !== 'admin') return { error: true, response: json({ error: 'Admin access required' }, 403) };
   return auth;
+}
+
+// ===== TOTP (RFC 6238) =====
+
+function generateTOTPSecret() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const bytes = new Uint8Array(20);
+  crypto.getRandomValues(bytes);
+  let secret = '';
+  for (let i = 0; i < 32; i++) {
+    secret += chars[bytes[i % 20] % 32];
+  }
+  return secret;
+}
+
+function base32Decode(str) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const c of str.toUpperCase()) {
+    const val = chars.indexOf(c);
+    if (val === -1) continue;
+    bits += val.toString(2).padStart(5, '0');
+  }
+  const bytes = new Uint8Array(Math.floor(bits.length / 8));
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+  }
+  return bytes;
+}
+
+async function generateTOTPCode(secret, timeStep) {
+  const key = base32Decode(secret);
+  const time = Math.floor((timeStep || Date.now() / 1000) / 30);
+  const timeBytes = new Uint8Array(8);
+  let t = time;
+  for (let i = 7; i >= 0; i--) {
+    timeBytes[i] = t & 0xff;
+    t = Math.floor(t / 256);
+  }
+  const cryptoKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', cryptoKey, timeBytes);
+  const hmac = new Uint8Array(sig);
+  const offset = hmac[hmac.length - 1] & 0x0f;
+  const code = ((hmac[offset] & 0x7f) << 24 | hmac[offset + 1] << 16 | hmac[offset + 2] << 8 | hmac[offset + 3]) % 1000000;
+  return code.toString().padStart(6, '0');
+}
+
+async function verifyTOTP(secret, code) {
+  // Check current window and ±1 window (90 second tolerance)
+  const now = Date.now() / 1000;
+  for (const offset of [-30, 0, 30]) {
+    const expected = await generateTOTPCode(secret, now + offset);
+    if (expected === code) return true;
+  }
+  return false;
 }
 
 async function logAudit(env, deviceId, email, action, details) {

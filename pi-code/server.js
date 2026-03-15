@@ -352,11 +352,41 @@ async function pollForReminders() {
   }
 }
 
+// Track which voicemails we've already notified about
+let notifiedVoicemailIds = new Set();
+let pendingVoicemailNotifications = [];
+
 async function pollForVoicemails() {
   try {
     const resp = await fetch(`${CLOUD_API}/api/voicemail/${DEVICE_ID}`);
     const data = await resp.json();
-    writeVoicemails({ voicemails: data.voicemails || [] });
+    const cloudVms = data.voicemails || [];
+    const localData = readVoicemails();
+    const localIds = new Set((localData.voicemails || []).map(v => v.id));
+
+    // Find new voicemails (not yet on device)
+    for (const vm of cloudVms) {
+      if (!localIds.has(vm.id)) {
+        // Mark as delivered in cloud
+        try {
+          await fetch(`${CLOUD_API}/api/voicemail/${DEVICE_ID}/${vm.id}/delivered`, { method: 'POST' });
+          console.log(`Voicemail delivered: ${vm.from} (${vm.type})`);
+        } catch {}
+      }
+      // Queue notification for unplayed voicemails we haven't notified about
+      if (!vm.played && !notifiedVoicemailIds.has(vm.id)) {
+        notifiedVoicemailIds.add(vm.id);
+        pendingVoicemailNotifications.push({
+          id: vm.id,
+          from: vm.from || 'Someone',
+          type: vm.type || 'video',
+          duration: vm.duration || 0,
+          timestamp: vm.timestamp
+        });
+      }
+    }
+
+    writeVoicemails({ voicemails: cloudVms });
   } catch {
     // Silent fail
   }
@@ -455,6 +485,70 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/api/settings') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(readSettings()));
+    return;
+  }
+
+  // Get pending voicemail notifications (Electron polls this when coming off idle)
+  if (req.method === 'GET' && req.url === '/api/voicemails/notifications') {
+    const notifications = pendingVoicemailNotifications.slice();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ notifications }));
+    return;
+  }
+
+  // Dismiss a voicemail notification ("Later" pressed)
+  if (req.method === 'POST' && req.url === '/api/voicemails/dismiss') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { id } = JSON.parse(body);
+        pendingVoicemailNotifications = pendingVoicemailNotifications.filter(n => n.id !== id);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid request' }));
+      }
+    });
+    return;
+  }
+
+  // Mark voicemail as watched (user played it)
+  if (req.method === 'POST' && req.url === '/api/voicemails/watched') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { id } = JSON.parse(body);
+        // Remove from pending notifications
+        pendingVoicemailNotifications = pendingVoicemailNotifications.filter(n => n.id !== id);
+        // Mark as played locally
+        const data = readVoicemails();
+        const vm = (data.voicemails || []).find(v => v.id === id);
+        if (vm) {
+          vm.played = true;
+          vm.playedAt = new Date().toISOString();
+          writeVoicemails(data);
+        }
+        // Notify cloud
+        try {
+          await fetch(`${CLOUD_API}/api/voicemail/${DEVICE_ID}/${id}/watched`, { method: 'POST' });
+        } catch {}
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid request' }));
+      }
+    });
+    return;
+  }
+
+  // Get all voicemails (for contact card view)
+  if (req.method === 'GET' && req.url === '/api/voicemails') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(readVoicemails()));
     return;
   }
 
