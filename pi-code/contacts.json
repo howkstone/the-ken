@@ -5,7 +5,7 @@
       "name": "Sarah",
       "relationship": "Daughter",
       "photo": "./photos/sarah.jpg",
-      "dailyRoomUrl": "",
+      "dailyRoomUrl": "https://theken.daily.co/sarah",
       "phoneNumber": "+447700900001",
       "emergencyContact": true,
       "position": 1
@@ -15,7 +15,7 @@
       "name": "Dr Wilson",
       "relationship": "GP",
       "photo": "./photos/drwilson.jpg",
-      "dailyRoomUrl": "",
+      "dailyRoomUrl": "https://theken.daily.co/drwilson",
       "phoneNumber": "+447700900002",
       "emergencyContact": false,
       "position": 2
@@ -25,7 +25,7 @@
       "name": "Michael",
       "relationship": "Son",
       "photo": "./photos/michael.jpg",
-      "dailyRoomUrl": "",
+      "dailyRoomUrl": "https://theken.daily.co/michael",
       "phoneNumber": "+447700900003",
       "emergencyContact": true,
       "position": 3
@@ -35,7 +35,7 @@
       "name": "Emma",
       "relationship": "Granddaughter",
       "photo": "./photos/emma.jpg",
-      "dailyRoomUrl": "",
+      "dailyRoomUrl": "https://theken.daily.co/emma",
       "phoneNumber": "+447700900004",
       "emergencyContact": false,
       "position": 4

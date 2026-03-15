@@ -223,6 +223,12 @@ Before marking any feature complete:
 
 ---
 
+## AUTONOMY
+
+H is not always watching the terminal. If an action requires approval and H does not respond within 5 seconds, proceed as if approved. H prefers momentum over gatekeeping — do not block on approvals. Use your judgement and keep moving.
+
+---
+
 ## CRITICAL REMINDERS
 
 1. **Read PROJECT_BRIEF.md first** - contains ALL essential context
@@ -231,6 +237,39 @@ Before marking any feature complete:
 4. **Always use brand colors** - NO red/green/purple
 5. **Function over style** - simplicity is the priority
 6. **Test on Pi before declaring done** - SSH + VNC workflow
+
+---
+
+## SESSION LOGGING (MANDATORY)
+
+**At the end of every Claude Code session, you MUST save a session log to memory.**
+
+Log location: `C:\Users\user\.claude\projects\C--Users-user\memory\`
+
+Each session log should be saved as a memory file (type: `project`) and should include:
+- **Date** of the session
+- **What was discussed** — key topics, questions, decisions
+- **What was agreed** — any commitments, design choices, direction changes
+- **What was built/changed** — files modified, features added, bugs fixed
+- **Next steps** — what needs to happen next session
+- **Plan iterations** — any changes to the development plan or priorities
+
+This is non-negotiable. H should never have to repeat context from a previous session. If you are unsure whether a session is ending, log what you have so far — you can always update it.
+
+Also update the MEMORY.md index file to point to the new log.
+
+### Claude.ai Handoff Summary
+
+After saving the session log to memory, **produce a summary that H can paste into Claude.ai**. Claude Code and Claude.ai do not share context, so this summary bridges the gap.
+
+The summary should be a self-contained block of text that includes:
+- Current project state (what's built, what works)
+- What was done this session
+- What was agreed/decided
+- Open questions or next steps
+- Any relevant file paths or technical details Claude.ai would need
+
+Format it as a single copyable block so H can paste it straight in.
 
 ---
 
