@@ -1765,7 +1765,7 @@ async function sendEmail(env, to, subject, heading, bodyHtml) {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + env.RESEND_API_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: 'The Ken <noreply@theken.uk>',
+        from: 'The Ken <hello@theken.uk>',
         to,
         subject,
         html: emailTemplate(heading, bodyHtml),
