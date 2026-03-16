@@ -1856,11 +1856,25 @@ function feedbackViewerHTML(deviceId) {
           if (f.screenshot) {
             screenshotHtml = '<div style="margin-top:8px;"><img src="' + f.screenshot + '" style="max-width:100%;border-radius:8px;border:1px solid rgba(196,169,98,0.2);" alt="Screenshot at time of feedback" /></div>';
           }
+          let recentScreensHtml = '';
+          if (f.recentScreens && f.recentScreens.length > 0) {
+            recentScreensHtml = '<div style="margin-top:12px;"><strong>Recent screens (' + f.recentScreens.length + '):</strong><div style="display:flex;gap:8px;overflow-x:auto;padding:8px 0;">' +
+              f.recentScreens.map(function(s) {
+                return '<div style="flex-shrink:0;text-align:center;"><img src="' + s.frame + '" style="height:200px;border:1px solid #ccc;border-radius:4px;" /><div style="font-size:11px;color:#666;margin-top:4px;">' + s.screen + ' — ' + new Date(s.timestamp).toLocaleTimeString() + '</div></div>';
+              }).join('') +
+            '</div></div>';
+          }
+          let categoryHtml = '';
+          if (f.category) {
+            categoryHtml = '<div style="margin-bottom:8px;"><strong>Category:</strong> ' + f.category + '</div>';
+          }
           const submitter = f.submittedBy ? ' (' + f.submittedBy.email + ')' : '';
           return '<div class="item">' +
             '<div class="item-from">' + (f.from || 'Unknown') + submitter + '</div>' +
+            categoryHtml +
             content +
             screenshotHtml +
+            recentScreensHtml +
             '<div class="item-time">' + timeStr + '</div>' +
             '</div>';
         }).join('');

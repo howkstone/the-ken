@@ -20,6 +20,10 @@ const DEVICE_KEY_FILE = path.join(__dirname, '.device-key');
 let DEVICE_API_KEY = '';
 try { DEVICE_API_KEY = fs.readFileSync(DEVICE_KEY_FILE, 'utf8').trim(); } catch {}
 
+// Rolling screenshot buffer — keeps last 5 screen captures for feedback context
+const screenshotBuffer = [];
+const MAX_SCREENSHOTS = 5;
+
 // Authenticated fetch wrapper: adds device API key to all cloud requests
 function cloudFetch(url, opts) {
   opts = opts || {};
@@ -50,6 +54,52 @@ function logToAudit(action, details) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, details: typeof details === 'string' ? { info: details } : details })
   }).catch(() => {}); // Silent fail — never block main flow
+}
+
+async function captureBlurredScreenshot(screenName) {
+  try {
+    const win = global.kenWindow;
+    if (!win || win.isDestroyed()) return;
+
+    // Inject CSS to blur message content before capture
+    await win.webContents.executeJavaScript(`
+      (function() {
+        const style = document.createElement('style');
+        style.id = 'ken-blur-overlay';
+        style.textContent = '.msg-text, .msg-body, .thread-msg-text, .message-text, .msg-item-text, .vm-text, [class*="message"] .text-content { filter: blur(8px) !important; -webkit-filter: blur(8px) !important; }';
+        document.head.appendChild(style);
+      })();
+    `);
+
+    // Small delay for CSS to apply
+    await new Promise(r => setTimeout(r, 100));
+
+    // Capture
+    const image = await win.webContents.capturePage();
+    const resized = image.resize({ width: 480, quality: 'good' });
+    const jpegBuffer = resized.toJPEG(60);
+    const base64 = 'data:image/jpeg;base64,' + jpegBuffer.toString('base64');
+
+    // Remove blur CSS
+    await win.webContents.executeJavaScript(`
+      (function() {
+        const s = document.getElementById('ken-blur-overlay');
+        if (s) s.remove();
+      })();
+    `);
+
+    // Add to circular buffer
+    screenshotBuffer.push({
+      screen: screenName,
+      timestamp: new Date().toISOString(),
+      frame: base64
+    });
+    if (screenshotBuffer.length > MAX_SCREENSHOTS) {
+      screenshotBuffer.shift();
+    }
+  } catch (err) {
+    console.error('Rolling screenshot capture failed:', err.message);
+  }
 }
 
 const POLL_INTERVAL = 60000;       // Contacts, messages: every 60s (was 15s)
@@ -1076,6 +1126,23 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && req.url === '/api/capture-frame') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { screen } = JSON.parse(body);
+        await captureBlurredScreenshot(screen || 'unknown');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, buffered: screenshotBuffer.length }));
+      } catch {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Capture failed' }));
+      }
+    });
+    return;
+  }
+
   // Submit feedback (captures screenshot and forwards to cloud)
   if (req.method === 'POST' && req.url === '/api/feedback') {
     let body = '';
@@ -1083,14 +1150,31 @@ const server = http.createServer(async (req, res) => {
     req.on('end', async () => {
       try {
         const feedbackBody = JSON.parse(body);
-        // Capture screenshot to include with feedback
+        // Attach rolling screenshot buffer (last 5 screens, messages blurred)
+        feedbackBody.recentScreens = screenshotBuffer.slice();
+        // Also capture current screen (with blur)
         try {
           const win = global.kenWindow;
           if (win && !win.isDestroyed()) {
+            await win.webContents.executeJavaScript(`
+              (function() {
+                const style = document.createElement('style');
+                style.id = 'ken-blur-overlay';
+                style.textContent = '.msg-text, .msg-body, .thread-msg-text, .message-text, .msg-item-text, .vm-text, [class*="message"] .text-content { filter: blur(8px) !important; -webkit-filter: blur(8px) !important; }';
+                document.head.appendChild(style);
+              })();
+            `);
+            await new Promise(r => setTimeout(r, 100));
             const image = await win.webContents.capturePage();
             const resized = image.resize({ width: 480, quality: 'good' });
             const jpegBuffer = resized.toJPEG(70);
             feedbackBody.screenshot = 'data:image/jpeg;base64,' + jpegBuffer.toString('base64');
+            await win.webContents.executeJavaScript(`
+              (function() {
+                const s = document.getElementById('ken-blur-overlay');
+                if (s) s.remove();
+              })();
+            `);
           }
         } catch (err) {
           console.error('Feedback screenshot capture failed:', err.message);

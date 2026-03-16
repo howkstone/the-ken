@@ -2557,33 +2557,42 @@
     </div>
     <div style="padding:32px 24px;text-align:center;">
       <div style="font-family:'Cormorant Garamond',serif;font-weight:400;font-size:var(--header);color:var(--ink);margin-bottom:12px;">We'd love to hear from you</div>
-      <div style="font-family:'Jost',sans-serif;font-weight:400;font-size:var(--body);color:var(--mid);line-height:1.5;margin-bottom:32px;">Your feedback helps us improve The Ken. Send us a message or a voice recording.</div>
+      <div style="font-family:'Jost',sans-serif;font-weight:500;font-size:var(--body);color:var(--ink);opacity:0.7;line-height:1.5;margin-bottom:32px;">What kind of feedback do you have?</div>
     </div>
     <div style="padding:0 24px;">
-      <button class="answer-btn" onclick="openFeedbackReply()" style="width:100%;margin-bottom:16px;">Type a message</button>
-      <button class="answer-btn" id="voiceFeedbackBtn" onclick="startVoiceRecording()" style="width:100%;background:rgba(196,169,98,0.15);color:var(--gold);border:3px solid var(--gold);margin-bottom:16px;">Record a voice message</button>
-      <!-- Recording in progress -->
-      <div id="voiceRecordingArea" style="display:none;text-align:center;padding:16px 0;">
-        <div id="voiceRecordingStatus" style="font-family:'Jost',sans-serif;font-weight:500;font-size:var(--body-lg);color:var(--gold);margin-bottom:8px;">Recording...</div>
-        <div id="voiceRecordingTimer" style="font-family:'Jost',sans-serif;font-weight:400;font-size:var(--header-lg);color:var(--ink);margin-bottom:20px;">0:00</div>
-        <button class="answer-btn" onclick="pauseVoiceRecording()" style="width:100%;">Stop Recording</button>
-      </div>
-      <!-- Review after recording -->
-      <div id="voiceReviewArea" style="display:none;padding:16px 0;">
-        <div style="font-family:'Jost',sans-serif;font-weight:500;font-size:var(--body);color:var(--gold);text-align:center;margin-bottom:16px;">Recording ready</div>
-        <div id="voiceReviewDuration" style="font-family:'Jost',sans-serif;font-weight:400;font-size:var(--body);color:var(--mid);text-align:center;margin-bottom:20px;"></div>
-        <button class="answer-btn" onclick="submitVoiceFeedback()" style="width:100%;margin-bottom:12px;">Submit</button>
-        <button class="answer-btn" onclick="listenBackVoice()" style="width:100%;background:rgba(196,169,98,0.15);color:var(--gold);border:3px solid var(--gold);margin-bottom:12px;">Listen Back</button>
-        <div style="display:flex;gap:12px;margin-bottom:12px;">
-          <button class="reject-btn" onclick="continueVoiceRecording()" style="flex:1;padding:16px;">Continue Recording</button>
-          <button class="reject-btn" onclick="reRecordVoice()" style="flex:1;padding:16px;">Re-Record</button>
+      <button class="answer-btn feedback-cat-btn" onclick="selectFeedbackCategory('feature')" id="fbCatFeature" style="width:100%;margin-bottom:12px;">Feature idea</button>
+      <button class="answer-btn feedback-cat-btn" onclick="selectFeedbackCategory('bug')" id="fbCatBug" style="width:100%;margin-bottom:12px;">Something's wrong</button>
+      <button class="answer-btn feedback-cat-btn" onclick="selectFeedbackCategory('complaint')" id="fbCatComplaint" style="width:100%;margin-bottom:12px;">Complaint</button>
+      <button class="answer-btn feedback-cat-btn" onclick="selectFeedbackCategory('other')" id="fbCatOther" style="width:100%;margin-bottom:24px;">Other</button>
+
+      <div id="feedbackDetailsSection" style="display:none;">
+        <div style="font-family:'Jost',sans-serif;font-weight:500;font-size:var(--body);color:var(--ink);margin-bottom:16px;">Tell us more (required)</div>
+        <button class="answer-btn" onclick="openFeedbackReply()" style="width:100%;margin-bottom:16px;">Type a message</button>
+        <button class="answer-btn" id="voiceFeedbackBtn" onclick="startVoiceRecording()" style="width:100%;background:rgba(196,169,98,0.15);color:var(--ink);border:3px solid var(--gold);margin-bottom:16px;">Record a voice message</button>
+
+        <div id="voiceRecordingArea" style="display:none;text-align:center;padding:16px 0;">
+          <div id="voiceRecordingStatus" style="font-weight:500;color:var(--ink);">Recording...</div>
+          <div id="voiceRecordingTimer" style="font-size:var(--header);color:var(--ink);font-weight:500;">0:00</div>
+          <button class="answer-btn" onclick="pauseVoiceRecording()" style="width:100%;">Stop Recording</button>
         </div>
-        <button class="reject-btn" onclick="addTextNote()" style="width:100%;padding:16px;">Add a Written Note</button>
+
+        <div id="voiceReviewArea" style="display:none;padding:16px 0;">
+          <div style="font-weight:500;color:var(--ink);">Recording ready</div>
+          <div id="voiceReviewDuration" style="color:var(--ink);opacity:0.7;margin-bottom:12px;"></div>
+          <button class="answer-btn" onclick="submitVoiceFeedback()" style="width:100%;margin-bottom:12px;">Submit</button>
+          <button class="answer-btn" onclick="listenBackVoice()" style="width:100%;margin-bottom:12px;">Listen Back</button>
+          <div style="display:flex;gap:12px;margin-bottom:12px;">
+            <button class="answer-btn" onclick="continueVoiceRecording()" style="flex:1;background:transparent;color:var(--ink);border:2px solid var(--mid);">Continue Recording</button>
+            <button class="answer-btn" onclick="reRecordVoice()" style="flex:1;background:transparent;color:var(--ink);border:2px solid var(--mid);">Re-Record</button>
+          </div>
+          <button class="answer-btn" onclick="addTextNote()" style="width:100%;background:transparent;color:var(--ink);border:2px solid var(--mid);">Add a Written Note</button>
+        </div>
       </div>
+
       <div style="border-top:2px solid var(--cream);padding-top:24px;margin-top:16px;">
-        <div style="font-family:'Jost',sans-serif;font-weight:500;font-size:var(--body);color:var(--gold);text-align:center;margin-bottom:16px;">Or get in touch directly</div>
-        <div style="font-family:'Jost',sans-serif;font-weight:400;font-size:var(--body);color:var(--ink);text-align:center;margin-bottom:8px;">Call: +44 7845 546 551</div>
-        <div style="font-family:'Jost',sans-serif;font-weight:400;font-size:var(--body);color:var(--ink);text-align:center;">Email: howard@bigbraincompany.co.uk</div>
+        <div style="font-weight:500;color:var(--ink);opacity:0.7;">Or get in touch directly</div>
+        <div style="color:var(--ink);margin-top:8px;">Call: +44 7845 546 551</div>
+        <div style="color:var(--ink);">Email: howard@theken.uk</div>
       </div>
     </div>
   </div>
@@ -3815,6 +3824,15 @@
           body: JSON.stringify({ action: 'Navigated to ' + id })
         }).catch(() => {});
       }
+      // Capture blurred screenshot for rolling feedback buffer
+      const captureScreens = ['home', 'contacts', 'messages', 'settings', 'help', 'medical', 'contactCard', 'thread', 'feedback', 'messageView'];
+      if (captureScreens.includes(id)) {
+        fetch('http://localhost:3000/api/capture-frame', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ screen: id })
+        }).catch(() => {});
+      }
     }
 
     // ===== VIDEO CALLING =====
@@ -3983,6 +4001,14 @@
         return;
       }
       if (target === 'feedback') {
+        selectedFeedbackCategory = null;
+        document.querySelectorAll('.feedback-cat-btn').forEach(btn => {
+          btn.style.background = '';
+          btn.style.color = '';
+          btn.style.border = '';
+        });
+        const detailsSection = document.getElementById('feedbackDetailsSection');
+        if (detailsSection) detailsSection.style.display = 'none';
         showScreen('feedback');
         return;
       }
@@ -5112,11 +5138,15 @@
         const deviceData = await deviceResp.json();
 
         if (replyRecipient === 'The Ken Team') {
+          if (!selectedFeedbackCategory) {
+            // Don't send without category
+            return;
+          }
           // Route to feedback endpoint via local server (captures screenshot)
           await fetch('http://localhost:3000/api/feedback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ type: 'typed', from: userName, text: text, timestamp: new Date().toISOString() })
+            body: JSON.stringify({ type: 'typed', category: selectedFeedbackCategory || 'other', from: userName, text: text, timestamp: new Date().toISOString() })
           });
         } else {
           // Normal reply — goes to message history
@@ -5991,6 +6021,25 @@
     }
 
     // ===== FEEDBACK =====
+    // Feedback category selection
+    let selectedFeedbackCategory = null;
+
+    function selectFeedbackCategory(cat) {
+      selectedFeedbackCategory = cat;
+      document.querySelectorAll('.feedback-cat-btn').forEach(btn => {
+        btn.style.background = '';
+        btn.style.color = '';
+        btn.style.border = '';
+      });
+      const selected = document.getElementById('fbCat' + cat.charAt(0).toUpperCase() + cat.slice(1));
+      if (selected) {
+        selected.style.background = 'var(--gold)';
+        selected.style.color = 'var(--ink)';
+        selected.style.border = '3px solid var(--gold)';
+      }
+      document.getElementById('feedbackDetailsSection').style.display = 'block';
+    }
+
     let feedbackMediaRecorder = null;
     let feedbackAudioChunks = [];
     let feedbackRecordingTimer = null;
@@ -6120,6 +6169,11 @@
     }
 
     async function submitVoiceFeedback() {
+      if (!selectedFeedbackCategory) {
+        const utt = new SpeechSynthesisUtterance('Please select a feedback category first.');
+        window.speechSynthesis.speak(utt);
+        return;
+      }
       document.getElementById('voiceReviewArea').style.display = 'none';
       document.getElementById('voiceFeedbackBtn').style.display = 'block';
 
@@ -6141,6 +6195,7 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               type: 'voice',
+              category: selectedFeedbackCategory || 'other',
               from: userName,
               audio: base64Audio,
               text: feedbackTextNote || '',
