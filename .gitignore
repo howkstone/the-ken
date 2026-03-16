@@ -3,3 +3,4 @@ pi-code/config.json
 pi-code/calls.json
 pi-code/.device-id
 pi-code/messages.json
+.wrangler/

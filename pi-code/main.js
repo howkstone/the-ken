@@ -44,6 +44,9 @@ function createWindow() {
   win.loadFile('index.html');
   win.setMenuBarVisibility(false);
 
+  // Expose window for screen capture (used by server.js for HQ remote viewing)
+  global.kenWindow = win;
+
   // Open DevTools in development (comment out in production)
   // win.webContents.openDevTools();
 

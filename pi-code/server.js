@@ -16,8 +16,8 @@ function loadConfig() {
 const config = loadConfig();
 const DAILY_API_KEY = config.dailyApiKey || 'e1cd1b212795aeb0696ab6aa7693150bae1e0f7ced7e8160cc56873d76070957';
 const CLOUD_API = config.cloudApi || 'https://ken-api.the-ken.workers.dev';
-const POLL_INTERVAL = 15000;
-const CALL_POLL_INTERVAL = 3000;
+const POLL_INTERVAL = 60000;       // Contacts, messages: every 60s (was 15s)
+const CALL_POLL_INTERVAL = 10000;  // Calls: every 10s (was 3s)
 const CALLS_FILE = path.join(__dirname, 'calls.json');
 const CALL_HISTORY_FILE = path.join(__dirname, 'call-history.json');
 const REMINDERS_FILE = path.join(__dirname, 'reminders.json');
@@ -445,17 +445,68 @@ async function pollForOfflineAlertSettings() {
   } catch {}
 }
 
+// ===== SCREEN VIEWING (HQ Remote View) =====
+let screenStreamingActive = false;
+let screenStreamTimer = null;
+
+async function pollScreenViewStatus() {
+  try {
+    const resp = await fetch(`${CLOUD_API}/api/screen/${DEVICE_ID}/status`);
+    const data = await resp.json();
+    if (data.active && !screenStreamingActive) {
+      console.log('HQ screen viewing requested by', data.requestedBy);
+      startScreenStreaming();
+    } else if (!data.active && screenStreamingActive) {
+      console.log('HQ screen viewing stopped');
+      stopScreenStreaming();
+    }
+  } catch {}
+}
+
+function startScreenStreaming() {
+  screenStreamingActive = true;
+  // Capture and upload a frame every 2 seconds
+  screenStreamTimer = setInterval(captureAndUploadFrame, 2000);
+  captureAndUploadFrame();
+}
+
+function stopScreenStreaming() {
+  screenStreamingActive = false;
+  if (screenStreamTimer) { clearInterval(screenStreamTimer); screenStreamTimer = null; }
+}
+
+async function captureAndUploadFrame() {
+  if (!screenStreamingActive) return;
+  try {
+    const win = global.kenWindow;
+    if (!win || win.isDestroyed()) return;
+    const image = await win.webContents.capturePage();
+    // Resize to reduce bandwidth (half size) and convert to JPEG
+    const resized = image.resize({ width: 300, quality: 'good' });
+    const jpegBuffer = resized.toJPEG(60);
+    const base64 = 'data:image/jpeg;base64,' + jpegBuffer.toString('base64');
+    await fetch(`${CLOUD_API}/api/screen/${DEVICE_ID}/frame`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frame: base64 }),
+    });
+  } catch (err) {
+    console.error('Screen capture failed:', err.message);
+  }
+}
+
 // Start polling
-setInterval(pollForContacts, POLL_INTERVAL);
-setInterval(pollForMessages, POLL_INTERVAL);
-setInterval(pollForCalls, CALL_POLL_INTERVAL);
-setInterval(sendHeartbeat, 60000);
-setInterval(pollForPhotos, 60000);
-setInterval(pollForReminders, 60000);
-setInterval(pollForVoicemails, 30000);
-setInterval(pollForSettings, 30000);
-setInterval(pollForSettingsQueue, 60000);
-setInterval(pollForOfflineAlertSettings, 60000);
+setInterval(pollForContacts, POLL_INTERVAL);        // 60s
+setInterval(pollForMessages, POLL_INTERVAL);        // 60s
+setInterval(pollForCalls, CALL_POLL_INTERVAL);      // 10s
+setInterval(sendHeartbeat, 300000);                 // 5 min (was 60s)
+setInterval(pollForPhotos, 300000);                 // 5 min (was 60s)
+setInterval(pollForReminders, 300000);              // 5 min (was 60s)
+setInterval(pollForVoicemails, 120000);             // 2 min (was 30s)
+setInterval(pollForSettings, 120000);               // 2 min (was 30s)
+setInterval(pollForSettingsQueue, 300000);           // 5 min (was 60s)
+setInterval(pollForOfflineAlertSettings, 300000);   // 5 min (was 60s)
+setInterval(pollScreenViewStatus, 10000);           // 10s — check for HQ screen view requests
 pollForContacts();
 pollForMessages();
 pollForPhotos();
@@ -710,6 +761,64 @@ const server = http.createServer(async (req, res) => {
     if (msg) { msg.read = true; writeMessages(store); }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
+    return;
+  }
+
+  // Delete message (locally + from cloud history)
+  if (req.method === 'DELETE' && req.url.match(/^\/api\/messages\/[\w-]+$/)) {
+    const msgId = req.url.split('/')[3];
+    const store = readMessages();
+    const before = store.messages.length;
+    store.messages = store.messages.filter(m => m.id !== msgId);
+    if (store.messages.length < before) writeMessages(store);
+    // Also delete from cloud history
+    fetch(`${CLOUD_API}/api/messages/${DEVICE_ID}/${msgId}`, { method: 'DELETE' }).catch(() => {});
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true }));
+    return;
+  }
+
+  // Get medical info (proxy to cloud, with local cache)
+  if (req.method === 'GET' && req.url === '/api/medical') {
+    try {
+      const resp = await fetch(`${CLOUD_API}/api/medical/${DEVICE_ID}`);
+      const data = await resp.json();
+      // Cache locally
+      fs.writeFileSync(path.join(__dirname, 'medical-cache.json'), JSON.stringify(data));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    } catch {
+      // Serve from cache
+      try {
+        const cached = fs.readFileSync(path.join(__dirname, 'medical-cache.json'), 'utf8');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(cached);
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ gp: {}, medications: [], allergies: [], conditions: [], careNotes: '' }));
+      }
+    }
+    return;
+  }
+
+  // Get emergency contacts (proxy to cloud, with local cache for offline)
+  if (req.method === 'GET' && req.url === '/api/contacts/emergency') {
+    try {
+      const resp = await fetch(`${CLOUD_API}/api/contacts/${DEVICE_ID}/emergency`);
+      const data = await resp.json();
+      fs.writeFileSync(path.join(__dirname, 'emergency-cache.json'), JSON.stringify(data));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    } catch {
+      try {
+        const cached = fs.readFileSync(path.join(__dirname, 'emergency-cache.json'), 'utf8');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(cached);
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ contacts: [] }));
+      }
+    }
     return;
   }
 

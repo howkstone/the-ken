@@ -3,6 +3,37 @@
 
 const ALLOWED_ORIGINS = ['https://theken.uk', 'https://www.theken.uk', 'https://ken-api.the-ken.workers.dev'];
 
+// ===== ROLE & PERMISSIONS SYSTEM =====
+// Roles (ascending access): user, standard, admin, carer, hq
+const VALID_ROLES = ['user', 'standard', 'admin', 'carer', 'hq'];
+
+const PERMISSIONS = {
+  'view:contacts':           ['user', 'standard', 'admin', 'carer', 'hq'],
+  'edit:contacts':           ['admin', 'carer'],
+  'view:messages':           ['user', 'standard', 'admin', 'carer'],
+  'send:messages':           ['standard', 'admin', 'carer'],
+  'view:voicemail':          ['user', 'standard', 'admin', 'carer'],
+  'send:voicemail':          ['standard', 'admin', 'carer'],
+  'view:medical':            ['user', 'admin', 'carer'],
+  'edit:medical':            ['user', 'admin', 'carer'],
+  'view:care_notes':         ['user', 'admin', 'carer', 'hq'],
+  'edit:care_notes':         ['carer'],
+  'edit:settings':           ['admin', 'carer'],
+  'edit:reminders':          ['admin', 'carer'],
+  'view:audit':              ['admin', 'carer', 'hq'],
+  'manage:multiple_devices': ['carer', 'hq'],
+  'manage:invites':          ['admin'],
+  'view:all_devices':        ['hq'],
+  'remote:view_pi':          ['hq'],
+  'set:poa':                 ['hq'],
+  'view:hq_messages':        [], // requires explicit permission grant
+  'view:hq_voicemail':       [], // requires explicit permission grant
+};
+
+function hasPermission(role, action) {
+  return (PERMISSIONS[action] || []).includes(role);
+}
+
 function getCorsHeaders(request) {
   const origin = request.headers.get('Origin') || '';
   const allowedOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
@@ -92,56 +123,60 @@ export default {
     }
 
     // ===== MFA SETUP =====
+    // Setup uses a temporary token instead of cookies to avoid third-party cookie blocking
     if (request.method === 'POST' && path === '/api/auth/mfa/setup') {
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
       const secret = generateTOTPSecret();
-      // Store pending secret (not yet confirmed)
-      auth.user.mfaPendingSecret = secret;
-      await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+      // Store pending setup with a temporary token (avoids cookie issues on confirm)
+      const setupToken = crypto.randomUUID();
+      await env.KEN_KV.put(`mfa-setup:${setupToken}`, JSON.stringify({ email: auth.user.email, secret }), { expirationTtl: 600 });
       const otpauth = `otpauth://totp/TheKen:${encodeURIComponent(auth.user.email)}?secret=${secret}&issuer=TheKen&digits=6&period=30`;
-      return json({ secret, otpauth });
+      return json({ secret, otpauth, setupToken });
     }
 
+    // Confirm uses the setupToken from setup (no cookie needed)
     if (request.method === 'POST' && path === '/api/auth/mfa/confirm') {
-      const auth = await requireAuth(request, env);
-      if (auth.error) return auth.response;
       try {
         const body = await request.json();
-        const { code } = body;
-        if (!code || !auth.user.mfaPendingSecret) return json({ error: 'No pending MFA setup or missing code' }, 400);
-        const valid = await verifyTOTP(auth.user.mfaPendingSecret, code);
-        if (!valid) return json({ error: 'Invalid code. Please try again.' }, 400);
-        // Activate MFA
-        auth.user.mfaEnabled = true;
-        auth.user.mfaSecret = auth.user.mfaPendingSecret;
-        delete auth.user.mfaPendingSecret;
-        // Generate backup codes
+        const { code, setupToken } = body;
+        if (!code || !setupToken) return json({ error: 'Code and setup token are required' }, 400);
+        const setup = await env.KEN_KV.get(`mfa-setup:${setupToken}`, 'json');
+        if (!setup) return json({ error: 'Setup expired. Please start MFA setup again.' }, 400);
+        const valid = await verifyTOTP(setup.secret, code);
+        if (!valid) return json({ error: 'Invalid code. Check your authenticator app and try again.' }, 400);
+        // Activate MFA on the user
+        const user = await env.KEN_KV.get(`user:${setup.email}`, 'json');
+        if (!user) return json({ error: 'User not found' }, 400);
+        user.mfaEnabled = true;
+        user.mfaSecret = setup.secret;
         const backupCodes = Array.from({ length: 8 }, () => crypto.randomUUID().slice(0, 8));
-        auth.user.mfaBackupCodes = backupCodes;
-        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
-        const deviceIds = Object.keys(auth.user.devices || {});
-        if (deviceIds[0]) await logAudit(env, deviceIds[0], auth.user.email, 'Enabled MFA', {});
+        user.mfaBackupCodes = backupCodes;
+        await env.KEN_KV.put(`user:${setup.email}`, JSON.stringify(user));
+        await env.KEN_KV.delete(`mfa-setup:${setupToken}`);
+        const deviceIds = Object.keys(user.devices || {});
+        if (deviceIds[0]) await logAudit(env, deviceIds[0], setup.email, 'Enabled MFA', {});
         return json({ success: true, backupCodes });
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
+    // Disable also uses email+password directly (no cookie needed)
     if (request.method === 'POST' && path === '/api/auth/mfa/disable') {
-      const auth = await requireAuth(request, env);
-      if (auth.error) return auth.response;
       try {
         const body = await request.json();
-        const { password } = body;
-        if (!password) return json({ error: 'Password required to disable MFA' }, 400);
+        const { email, password } = body;
+        if (!email || !password) return json({ error: 'Email and password required' }, 400);
+        const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
+        if (!user) return json({ error: 'Invalid credentials' }, 401);
         const hash = await hashPassword(password);
-        if (hash !== auth.user.passwordHash) return json({ error: 'Invalid password' }, 401);
-        auth.user.mfaEnabled = false;
-        delete auth.user.mfaSecret;
-        delete auth.user.mfaPendingSecret;
-        delete auth.user.mfaBackupCodes;
-        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
-        const deviceIds = Object.keys(auth.user.devices || {});
-        if (deviceIds[0]) await logAudit(env, deviceIds[0], auth.user.email, 'Disabled MFA', {});
+        if (hash !== user.passwordHash) return json({ error: 'Invalid password' }, 401);
+        user.mfaEnabled = false;
+        delete user.mfaSecret;
+        delete user.mfaPendingSecret;
+        delete user.mfaBackupCodes;
+        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+        const deviceIds = Object.keys(user.devices || {});
+        if (deviceIds[0]) await logAudit(env, deviceIds[0], email, 'Disabled MFA', {});
         return json({ success: true });
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
@@ -150,6 +185,83 @@ export default {
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
       return json({ mfaEnabled: !!auth.user.mfaEnabled });
+    }
+
+    // ===== FORGOT PASSWORD =====
+    if (request.method === 'POST' && path === '/api/auth/forgot-password') {
+      try {
+        const body = await request.json();
+        const { email } = body;
+        if (!email) return json({ error: 'Email is required' }, 400);
+        const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
+        // Always return success (don't reveal if account exists)
+        if (!user) return json({ success: true });
+        const resetToken = crypto.randomUUID();
+        await env.KEN_KV.put(`reset:${resetToken}`, JSON.stringify({ email: email.toLowerCase(), createdAt: new Date().toISOString() }), { expirationTtl: 3600 });
+        // Store token on user for reference
+        user.resetToken = resetToken;
+        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+        // Send email via Resend (if API key configured)
+        if (env.RESEND_API_KEY) {
+          try {
+            await fetch('https://api.resend.com/emails', {
+              method: 'POST',
+              headers: { 'Authorization': 'Bearer ' + env.RESEND_API_KEY, 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                from: 'The Ken <noreply@theken.uk>',
+                to: email.toLowerCase(),
+                subject: 'Reset your password — The Ken',
+                html: '<div style="font-family:Jost,Helvetica,sans-serif;max-width:480px;margin:0 auto;padding:32px;">' +
+                  '<h1 style="font-size:24px;font-weight:300;color:#1A1714;">Reset your password</h1>' +
+                  '<p style="color:#6B6459;line-height:1.7;">Click the link below to set a new password. This link expires in 1 hour.</p>' +
+                  '<a href="https://theken.uk/portal/?reset=' + resetToken + '" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Reset Password</a>' +
+                  '<p style="color:#6B6459;font-size:13px;margin-top:24px;">If you didn\'t request this, you can ignore this email.</p>' +
+                  '<p style="color:#6B6459;font-size:12px;opacity:0.5;margin-top:32px;">&copy; 2026 The Ken</p></div>'
+              })
+            });
+          } catch {}
+        }
+        return json({ success: true, resetToken: env.RESEND_API_KEY ? undefined : resetToken });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    if (request.method === 'POST' && path === '/api/auth/reset-password') {
+      try {
+        const body = await request.json();
+        const { token, password } = body;
+        if (!token || !password) return json({ error: 'Token and password are required' }, 400);
+        if (password.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400);
+        const reset = await env.KEN_KV.get(`reset:${token}`, 'json');
+        if (!reset) return json({ error: 'Reset link has expired. Please request a new one.' }, 400);
+        const user = await env.KEN_KV.get(`user:${reset.email}`, 'json');
+        if (!user) return json({ error: 'Account not found' }, 400);
+        user.passwordHash = await hashPassword(password);
+        delete user.resetToken;
+        await env.KEN_KV.put(`user:${reset.email}`, JSON.stringify(user));
+        await env.KEN_KV.delete(`reset:${token}`);
+        const deviceIds = Object.keys(user.devices || {});
+        if (deviceIds[0]) await logAudit(env, deviceIds[0], reset.email, 'Password reset', {});
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== FEEDBACK (all devices — for head office) =====
+    if (request.method === 'GET' && path === '/api/admin/feedback/all') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      // Check if user has admin on any device (head office access)
+      const isAnyAdmin = Object.values(auth.user.devices || {}).some(d => d.role === 'admin');
+      if (!isAnyAdmin) return json({ error: 'Admin access required' }, 403);
+      const devices = await env.KEN_KV.get('devices:all', 'json') || [];
+      const allFeedback = [];
+      for (const deviceId of devices) {
+        const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+        feedback.forEach(f => { f.deviceId = deviceId; });
+        allFeedback.push(...feedback);
+      }
+      // Sort by timestamp, newest first
+      allFeedback.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+      return json({ feedback: allFeedback });
     }
 
     if (request.method === 'POST' && path === '/api/auth/logout') {
@@ -164,11 +276,29 @@ export default {
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
       const user = auth.user;
-      // Determine role from first device (or default)
       const deviceIds = Object.keys(user.devices || {});
       const firstDevice = deviceIds[0] || null;
-      const role = firstDevice && user.devices[firstDevice] ? user.devices[firstDevice].role : 'standard';
-      return json({ user: { email: user.email, name: user.name, phone: user.phone, photo: user.photo, role, devices: user.devices, deviceId: firstDevice, mfaEnabled: !!user.mfaEnabled } });
+      const role = user.globalRole || (firstDevice && user.devices[firstDevice] ? user.devices[firstDevice].role : 'standard');
+      return json({ user: {
+        email: user.email, name: user.name, phone: user.phone, photo: user.photo,
+        role, globalRole: user.globalRole || null,
+        devices: user.devices, deviceId: firstDevice,
+        carerDevices: user.carerDevices || [],
+        carerProfile: user.carerProfile || null,
+        mfaEnabled: !!user.mfaEnabled,
+        poa: user.poa || false,
+      }});
+    }
+
+    // Check specific permission for a device
+    if (request.method === 'GET' && path.match(/^\/api\/auth\/can\/[\w-]+\/[\w:.-]+$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[4];
+      const action = parts[5];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const perm = requirePermission(auth.user, deviceId, action);
+      return json({ allowed: perm.allowed, role: perm.role });
     }
 
     if (request.method === 'GET' && path.match(/^\/api\/auth\/permissions\/[\w-]+$/)) {
@@ -185,7 +315,7 @@ export default {
         const body = await request.json();
         const { email, deviceId, role } = body;
         if (!email || !deviceId || !role) return json({ error: 'email, deviceId and role are required' }, 400);
-        if (role !== 'admin' && role !== 'standard') return json({ error: 'role must be admin or standard' }, 400);
+        if (!VALID_ROLES.includes(role)) return json({ error: 'role must be one of: ' + VALID_ROLES.join(', ') }, 400);
         const auth = await requireAdmin(request, env, deviceId);
         if (auth.error) return auth.response;
         await env.KEN_KV.put(`invite:${deviceId}:${email.toLowerCase()}`, JSON.stringify({ role, invitedBy: auth.user.email, createdAt: new Date().toISOString() }));
@@ -286,7 +416,7 @@ export default {
       const deviceId = path.split('/')[3];
       try {
         const body = await request.json();
-        const { from, text } = body;
+        const { from, text, to } = body;
         if (!from || !text || !text.trim()) {
           return json({ error: 'From and text are required' }, 400);
         }
@@ -296,6 +426,7 @@ export default {
           text: text.trim(),
           sentAt: new Date().toISOString(),
           isReply: true,
+          to: (to || '').trim() || undefined,
         };
         const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
         history.push(message);
@@ -312,6 +443,20 @@ export default {
       const deviceId = path.split('/')[3];
       const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
       return json({ messages: history });
+    }
+
+    // ===== DELETE MESSAGE (from history) =====
+    if (request.method === 'DELETE' && path.match(/^\/api\/messages\/[\w-]+\/[\w-]+$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const messageId = parts[4];
+      const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+      const filtered = history.filter(m => m.id !== messageId);
+      if (filtered.length === history.length) {
+        return json({ error: 'Message not found' }, 404);
+      }
+      await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(filtered));
+      return json({ success: true });
     }
 
     // ===== CALL ENDPOINTS =====
@@ -434,6 +579,543 @@ export default {
       return json({ contacts });
     }
 
+    // Update a contact
+    if (request.method === 'POST' && path.match(/^\/api\/contacts\/[\w-]+\/update$/)) {
+      const deviceId = path.split('/')[3];
+      try {
+        const body = await request.json();
+        const { id, name, relationship, phoneNumber } = body;
+        if (!id) return json({ error: 'Contact id required' }, 400);
+        const contacts = await env.KEN_KV.get(`contactlist:${deviceId}`, 'json') || [];
+        const contact = contacts.find(c => c.id === id);
+        if (!contact) return json({ error: 'Contact not found' }, 404);
+        if (name !== undefined) contact.name = name;
+        if (relationship !== undefined) contact.relationship = relationship;
+        if (phoneNumber !== undefined) contact.phoneNumber = phoneNumber;
+        await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // Delete a contact
+    if (request.method === 'POST' && path.match(/^\/api\/contacts\/[\w-]+\/delete$/)) {
+      const deviceId = path.split('/')[3];
+      try {
+        const body = await request.json();
+        const { id } = body;
+        if (!id) return json({ error: 'Contact id required' }, 400);
+        const contacts = await env.KEN_KV.get(`contactlist:${deviceId}`, 'json') || [];
+        const filtered = contacts.filter(c => c.id !== id);
+        if (filtered.length === contacts.length) return json({ error: 'Contact not found' }, 404);
+        // Re-number positions
+        filtered.forEach((c, i) => c.position = i + 1);
+        await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(filtered));
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // Toggle emergency contact flag
+    if (request.method === 'POST' && path.match(/^\/api\/contacts\/[\w-]+\/emergency$/)) {
+      const deviceId = path.split('/')[3];
+      try {
+        const body = await request.json();
+        const { id, isEmergencyContact } = body;
+        if (!id) return json({ error: 'Contact id required' }, 400);
+        const contacts = await env.KEN_KV.get(`contactlist:${deviceId}`, 'json') || [];
+        const contact = contacts.find(c => c.id === id);
+        if (!contact) return json({ error: 'Contact not found' }, 404);
+        contact.isEmergencyContact = !!isEmergencyContact;
+        await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
+        const session = await getSession(request, env);
+        await logAudit(env, deviceId, session ? session.email : 'unknown', isEmergencyContact ? 'Marked emergency contact' : 'Unmarked emergency contact', { contactName: contact.name });
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // Toggle POA flag on contact (HQ only)
+    if (request.method === 'POST' && path.match(/^\/api\/contacts\/[\w-]+\/poa$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const role = getUserRole(auth.user, deviceId);
+      if (role !== 'hq') return json({ error: 'Only HQ can set POA status' }, 403);
+      try {
+        const body = await request.json();
+        const { id, hasPOA } = body;
+        if (!id) return json({ error: 'Contact id required' }, 400);
+        const contacts = await env.KEN_KV.get(`contactlist:${deviceId}`, 'json') || [];
+        const contact = contacts.find(c => c.id === id);
+        if (!contact) return json({ error: 'Contact not found' }, 404);
+        contact.hasPOA = !!hasPOA;
+        await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
+        await logAudit(env, deviceId, auth.user.email, hasPOA ? 'Set POA on contact' : 'Removed POA from contact', { contactName: contact.name });
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // Set POA on a user login profile (HQ only)
+    if (request.method === 'POST' && path === '/api/auth/poa') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'hq') return json({ error: 'Only HQ can set POA status' }, 403);
+      try {
+        const body = await request.json();
+        const { email, hasPOA, deviceId } = body;
+        if (!email) return json({ error: 'Email required' }, 400);
+        const targetUser = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
+        if (!targetUser) return json({ error: 'User not found' }, 404);
+        targetUser.poa = !!hasPOA;
+        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(targetUser));
+        if (deviceId) await logAudit(env, deviceId, auth.user.email, hasPOA ? 'Granted POA to user' : 'Revoked POA from user', { targetEmail: email });
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // Get emergency contacts for a device (works for Pi offline cache)
+    if (request.method === 'GET' && path.match(/^\/api\/contacts\/[\w-]+\/emergency$/)) {
+      const deviceId = path.split('/')[3];
+      const contacts = await env.KEN_KV.get(`contactlist:${deviceId}`, 'json') || [];
+      const emergency = contacts.filter(c => c.isEmergencyContact);
+      return json({ contacts: emergency });
+    }
+
+    // ===== MEDICAL INFO =====
+    if (request.method === 'GET' && path.match(/^\/api\/medical\/[\w-]+$/)) {
+      const deviceId = path.split('/')[3];
+      const medical = await env.KEN_KV.get(`medical:${deviceId}`, 'json') || { gp: {}, medications: [], allergies: [], conditions: [], careNotes: '' };
+      return json(medical);
+    }
+
+    if (request.method === 'POST' && path.match(/^\/api\/medical\/[\w-]+$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const role = getUserRole(auth.user, deviceId);
+      if (!hasPermission(role, 'edit:medical')) return json({ error: 'No permission to edit medical info' }, 403);
+      try {
+        const body = await request.json();
+        const existing = await env.KEN_KV.get(`medical:${deviceId}`, 'json') || { gp: {}, medications: [], allergies: [], conditions: [], careNotes: '' };
+        if (body.gp !== undefined) existing.gp = body.gp;
+        if (body.medications !== undefined) existing.medications = body.medications;
+        if (body.allergies !== undefined) existing.allergies = body.allergies;
+        if (body.conditions !== undefined) existing.conditions = body.conditions;
+        existing.updatedAt = new Date().toISOString();
+        existing.updatedBy = auth.user.email;
+        await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(existing));
+        await logAudit(env, deviceId, auth.user.email, 'Updated medical info', { fields: Object.keys(body).filter(k => body[k] !== undefined) });
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // Care notes (carer edit only, others view)
+    if (request.method === 'POST' && path.match(/^\/api\/medical\/[\w-]+\/care-notes$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const role = getUserRole(auth.user, deviceId);
+      if (!hasPermission(role, 'edit:care_notes')) return json({ error: 'Only carers can edit care notes' }, 403);
+      try {
+        const body = await request.json();
+        const existing = await env.KEN_KV.get(`medical:${deviceId}`, 'json') || { gp: {}, medications: [], allergies: [], conditions: [], careNotes: '' };
+        existing.careNotes = body.careNotes || '';
+        existing.careNotesUpdatedAt = new Date().toISOString();
+        existing.careNotesUpdatedBy = auth.user.email;
+        await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(existing));
+        await logAudit(env, deviceId, auth.user.email, 'Updated care notes', {});
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // ===== CARER ENDPOINTS =====
+    if (request.method === 'GET' && path === '/api/carer/devices') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'carer') return json({ error: 'Carer role required' }, 403);
+      const deviceIds = auth.user.carerDevices || [];
+      const devices = [];
+      for (const did of deviceIds) {
+        const info = await env.KEN_KV.get(`device:${did}`, 'json') || {};
+        const heartbeat = await env.KEN_KV.get(`heartbeat:${did}`, 'json');
+        const contacts = await env.KEN_KV.get(`contactlist:${did}`, 'json') || [];
+        devices.push({
+          deviceId: did,
+          userName: info.userName || 'Unknown',
+          lastActive: heartbeat ? heartbeat.timestamp : null,
+          online: heartbeat ? (Date.now() - new Date(heartbeat.timestamp).getTime() < 360000) : false,
+          contactCount: contacts.length,
+        });
+      }
+      return json({ devices });
+    }
+
+    if (request.method === 'POST' && path === '/api/carer/profile') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'carer') return json({ error: 'Carer role required' }, 403);
+      try {
+        const body = await request.json();
+        auth.user.carerProfile = {
+          professionalTitle: (body.professionalTitle || '').trim(),
+          organisation: (body.organisation || '').trim(),
+          registrationNumber: (body.registrationNumber || '').trim(),
+        };
+        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // Patient details (carer-specific per device)
+    if (request.method === 'POST' && path.match(/^\/api\/carer\/patient\/[\w-]+$/)) {
+      const deviceId = path.split('/')[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const role = getUserRole(auth.user, deviceId);
+      if (role !== 'carer' && role !== 'admin') return json({ error: 'Carer or admin access required' }, 403);
+      try {
+        const body = await request.json();
+        const key = `patient:${deviceId}`;
+        const existing = await env.KEN_KV.get(key, 'json') || {};
+        const patient = {
+          ...existing,
+          patientNumber: body.patientNumber !== undefined ? body.patientNumber : existing.patientNumber,
+          fullName: body.fullName !== undefined ? body.fullName : existing.fullName,
+          location: body.location !== undefined ? body.location : existing.location,
+          dob: body.dob !== undefined ? body.dob : existing.dob,
+          nextOfKin: body.nextOfKin !== undefined ? body.nextOfKin : existing.nextOfKin,
+          preferredHospital: body.preferredHospital !== undefined ? body.preferredHospital : existing.preferredHospital,
+          nhsNumber: body.nhsNumber !== undefined ? body.nhsNumber : existing.nhsNumber,
+          communicationNotes: body.communicationNotes !== undefined ? body.communicationNotes : existing.communicationNotes,
+          mobilityLevel: body.mobilityLevel !== undefined ? body.mobilityLevel : existing.mobilityLevel,
+          keySafeCode: body.keySafeCode !== undefined ? body.keySafeCode : existing.keySafeCode,
+          updatedAt: new Date().toISOString(),
+          updatedBy: auth.user.email,
+        };
+        await env.KEN_KV.put(key, JSON.stringify(patient));
+        await logAudit(env, deviceId, auth.user.email, 'Updated patient details', {});
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    if (request.method === 'GET' && path.match(/^\/api\/carer\/patient\/[\w-]+$/)) {
+      const deviceId = path.split('/')[4];
+      const patient = await env.KEN_KV.get(`patient:${deviceId}`, 'json') || {};
+      return json(patient);
+    }
+
+    // Carer inactivity alert settings per device
+    if (request.method === 'POST' && path.match(/^\/api\/carer\/alerts\/[\w-]+$/)) {
+      const deviceId = path.split('/')[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const role = getUserRole(auth.user, deviceId);
+      if (role !== 'carer' && role !== 'admin') return json({ error: 'Carer or admin access required' }, 403);
+      try {
+        const body = await request.json();
+        const alerts = {
+          enabled: body.enabled !== undefined ? !!body.enabled : true,
+          thresholdMinutes: body.thresholdMinutes || 60,
+          outsideNightlightOnly: body.outsideNightlightOnly !== undefined ? !!body.outsideNightlightOnly : true,
+          method: body.method || ['email'],
+          updatedAt: new Date().toISOString(),
+          updatedBy: auth.user.email,
+        };
+        await env.KEN_KV.put(`carer-alerts:${deviceId}:${auth.user.email}`, JSON.stringify(alerts));
+        await logAudit(env, deviceId, auth.user.email, 'Updated inactivity alert settings', { enabled: alerts.enabled, threshold: alerts.thresholdMinutes });
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    if (request.method === 'GET' && path.match(/^\/api\/carer\/alerts\/[\w-]+$/)) {
+      const deviceId = path.split('/')[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const alerts = await env.KEN_KV.get(`carer-alerts:${deviceId}:${auth.user.email}`, 'json') || { enabled: true, thresholdMinutes: 60, outsideNightlightOnly: true, method: ['email'] };
+      return json(alerts);
+    }
+
+    // ===== HQ ENDPOINTS =====
+    if (request.method === 'GET' && path === '/api/hq/devices') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'hq') return json({ error: 'HQ role required' }, 403);
+      const allDevices = await env.KEN_KV.get('devices:all', 'json') || [];
+      const devices = [];
+      for (const did of allDevices) {
+        const info = await env.KEN_KV.get(`device:${did}`, 'json') || {};
+        const heartbeat = await env.KEN_KV.get(`heartbeat:${did}`, 'json');
+        devices.push({
+          deviceId: did,
+          userName: info.userName || 'Unknown',
+          lastActive: heartbeat ? heartbeat.timestamp : null,
+          online: heartbeat ? (Date.now() - new Date(heartbeat.timestamp).getTime() < 360000) : false,
+        });
+      }
+      return json({ devices });
+    }
+
+    // HQ request access to private content
+    if (request.method === 'POST' && path.match(/^\/api\/hq\/request-access\/[\w-]+$/)) {
+      const deviceId = path.split('/')[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'hq') return json({ error: 'HQ role required' }, 403);
+      try {
+        const body = await request.json();
+        const { contentType, reason } = body;
+        if (!contentType || !reason) return json({ error: 'contentType and reason required' }, 400);
+        if (!['messages', 'voicemail'].includes(contentType)) return json({ error: 'contentType must be messages or voicemail' }, 400);
+        const rid = crypto.randomUUID();
+        const accessRequest = {
+          id: rid, hqEmail: auth.user.email, hqName: auth.user.name,
+          deviceId, contentType, reason: reason.trim(),
+          status: 'pending', requestedAt: new Date().toISOString(),
+        };
+        const requests = await env.KEN_KV.get(`hq-access-requests:${deviceId}`, 'json') || [];
+        requests.push(accessRequest);
+        await env.KEN_KV.put(`hq-access-requests:${deviceId}`, JSON.stringify(requests));
+        await logAudit(env, deviceId, auth.user.email, 'HQ requested access', { contentType, reason: reason.trim() });
+        return json({ success: true, requestId: rid });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // Approve HQ access request
+    if (request.method === 'POST' && path.match(/^\/api\/hq\/approve-access\/[\w-]+$/)) {
+      const requestId = path.split('/')[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      try {
+        const body = await request.json();
+        const { deviceId, approved, durationHours } = body;
+        if (!deviceId) return json({ error: 'deviceId required' }, 400);
+        const role = getUserRole(auth.user, deviceId);
+        if (role !== 'admin' && role !== 'carer' && !auth.user.poa) {
+          return json({ error: 'Admin, carer or POA holder required to approve' }, 403);
+        }
+        const requests = await env.KEN_KV.get(`hq-access-requests:${deviceId}`, 'json') || [];
+        const req_item = requests.find(r => r.id === requestId);
+        if (!req_item) return json({ error: 'Request not found' }, 404);
+        req_item.status = approved ? 'approved' : 'denied';
+        req_item.approvedBy = auth.user.email;
+        req_item.approvedAt = new Date().toISOString();
+        if (approved) {
+          const hours = durationHours || 1;
+          req_item.expiresAt = new Date(Date.now() + hours * 3600000).toISOString();
+          await env.KEN_KV.put(`hq-access:${deviceId}:${req_item.hqEmail}:${req_item.contentType}`, JSON.stringify({
+            grantedAt: req_item.approvedAt, expiresAt: req_item.expiresAt, approvedBy: auth.user.email,
+          }), { expirationTtl: hours * 3600 });
+        }
+        await env.KEN_KV.put(`hq-access-requests:${deviceId}`, JSON.stringify(requests));
+        await logAudit(env, deviceId, auth.user.email, approved ? 'Approved HQ access' : 'Denied HQ access', { requestId, contentType: req_item.contentType, hqEmail: req_item.hqEmail });
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // Check HQ access status
+    if (request.method === 'GET' && path.match(/^\/api\/hq\/access-status\/[\w-]+$/)) {
+      const deviceId = path.split('/')[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const msgAccess = await env.KEN_KV.get(`hq-access:${deviceId}:${auth.user.email}:messages`, 'json');
+      const vmAccess = await env.KEN_KV.get(`hq-access:${deviceId}:${auth.user.email}:voicemail`, 'json');
+      return json({
+        messages: msgAccess ? { granted: true, expiresAt: msgAccess.expiresAt } : { granted: false },
+        voicemail: vmAccess ? { granted: true, expiresAt: vmAccess.expiresAt } : { granted: false },
+      });
+    }
+
+    // Get pending HQ access requests (for admin/carer)
+    if (request.method === 'GET' && path.match(/^\/api\/hq\/pending-requests\/[\w-]+$/)) {
+      const deviceId = path.split('/')[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const role = getUserRole(auth.user, deviceId);
+      if (role !== 'admin' && role !== 'carer') return json({ error: 'Admin or carer required' }, 403);
+      const requests = await env.KEN_KV.get(`hq-access-requests:${deviceId}`, 'json') || [];
+      const pending = requests.filter(r => r.status === 'pending');
+      return json({ requests: pending });
+    }
+
+    // ===== SCREEN VIEWING (HQ Remote View) =====
+
+    // HQ starts screen viewing session
+    if (request.method === 'POST' && path.match(/^\/api\/screen\/[\w-]+\/start$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const perm = requirePermission(auth.user, deviceId, 'remote:view_pi');
+      if (!perm.allowed) return json({ error: 'HQ role required for screen viewing' }, 403);
+      await env.KEN_KV.put(`screen:active:${deviceId}`, JSON.stringify({
+        requestedBy: auth.user.email,
+        requestedByName: auth.user.name,
+        startedAt: new Date().toISOString(),
+      }), { expirationTtl: 3600 });
+      await logAudit(env, deviceId, auth.user.email, 'Screen viewing started', {});
+      return json({ success: true });
+    }
+
+    // HQ stops screen viewing session
+    if (request.method === 'POST' && path.match(/^\/api\/screen\/[\w-]+\/stop$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      await env.KEN_KV.delete(`screen:active:${deviceId}`);
+      await env.KEN_KV.delete(`screen:frame:${deviceId}`);
+      await logAudit(env, deviceId, auth.user.email, 'Screen viewing stopped', {});
+      return json({ success: true });
+    }
+
+    // Pi checks if screen viewing is requested (polls this)
+    if (request.method === 'GET' && path.match(/^\/api\/screen\/[\w-]+\/status$/)) {
+      const deviceId = path.split('/')[3];
+      const active = await env.KEN_KV.get(`screen:active:${deviceId}`, 'json');
+      return json({ active: !!active, ...(active || {}) });
+    }
+
+    // Pi uploads a screen frame (JPEG base64)
+    if (request.method === 'POST' && path.match(/^\/api\/screen\/[\w-]+\/frame$/)) {
+      const deviceId = path.split('/')[3];
+      const active = await env.KEN_KV.get(`screen:active:${deviceId}`);
+      if (!active) return json({ error: 'Streaming not active' }, 400);
+      try {
+        const body = await request.json();
+        if (!body.frame) return json({ error: 'frame required' }, 400);
+        await env.KEN_KV.put(`screen:frame:${deviceId}`, body.frame, { expirationTtl: 30 });
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // Portal gets latest screen frame
+    if (request.method === 'GET' && path.match(/^\/api\/screen\/[\w-]+\/frame$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const perm = requirePermission(auth.user, deviceId, 'remote:view_pi');
+      if (!perm.allowed) return json({ error: 'HQ role required' }, 403);
+      const frame = await env.KEN_KV.get(`screen:frame:${deviceId}`);
+      if (!frame) return json({ frame: null, status: 'waiting' });
+      return json({ frame, status: 'streaming' });
+    }
+
+    // ===== SCHEDULED VOICEMAIL =====
+    if (request.method === 'POST' && path.match(/^\/api\/voicemail\/[\w-]+\/schedule$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      try {
+        const body = await request.json();
+        const { voicemailId, scheduledFor } = body;
+        if (!voicemailId || !scheduledFor) return json({ error: 'voicemailId and scheduledFor required' }, 400);
+        const scheduled = await env.KEN_KV.get(`scheduled-vm:${deviceId}`, 'json') || [];
+        scheduled.push({
+          id: crypto.randomUUID(), voicemailId,
+          from: auth.user.name || auth.user.email, fromEmail: auth.user.email,
+          scheduledFor, status: 'scheduled', createdAt: new Date().toISOString(),
+        });
+        await env.KEN_KV.put(`scheduled-vm:${deviceId}`, JSON.stringify(scheduled));
+        await logAudit(env, deviceId, auth.user.email, 'Scheduled voicemail', { scheduledFor });
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    if (request.method === 'GET' && path.match(/^\/api\/voicemail\/[\w-]+\/scheduled$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const scheduled = await env.KEN_KV.get(`scheduled-vm:${deviceId}`, 'json') || [];
+      const mine = scheduled.filter(s => s.fromEmail === auth.user.email);
+      return json({ scheduled: mine });
+    }
+
+    if (request.method === 'DELETE' && path.match(/^\/api\/voicemail\/[\w-]+\/scheduled\/[\w-]+$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const schedId = parts[5];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const scheduled = await env.KEN_KV.get(`scheduled-vm:${deviceId}`, 'json') || [];
+      const filtered = scheduled.filter(s => !(s.id === schedId && s.fromEmail === auth.user.email));
+      await env.KEN_KV.put(`scheduled-vm:${deviceId}`, JSON.stringify(filtered));
+      await logAudit(env, deviceId, auth.user.email, 'Deleted scheduled voicemail', { schedId });
+      return json({ success: true });
+    }
+
+    // ===== REMOTE MEDICATION REMINDERS =====
+    if (request.method === 'POST' && path.match(/^\/api\/reminders\/[\w-]+$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const role = getUserRole(auth.user, deviceId);
+      if (!hasPermission(role, 'edit:reminders')) return json({ error: 'Admin or carer access required' }, 403);
+      try {
+        const body = await request.json();
+        const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
+        const reminder = {
+          id: crypto.randomUUID(),
+          label: (body.label || '').trim(),
+          time: body.time,
+          days: body.days || ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+          enabled: true,
+          createdBy: auth.user.email,
+          createdAt: new Date().toISOString(),
+        };
+        reminders.push(reminder);
+        await env.KEN_KV.put(`reminders:${deviceId}`, JSON.stringify(reminders));
+        await logAudit(env, deviceId, auth.user.email, 'Added reminder', { label: reminder.label, time: reminder.time });
+        return json({ success: true, reminder });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    if (request.method === 'GET' && path.match(/^\/api\/reminders\/[\w-]+$/)) {
+      const deviceId = path.split('/')[3];
+      const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
+      return json({ reminders });
+    }
+
+    if (request.method === 'DELETE' && path.match(/^\/api\/reminders\/[\w-]+\/[\w-]+$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const reminderId = parts[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const role = getUserRole(auth.user, deviceId);
+      if (!hasPermission(role, 'edit:reminders')) return json({ error: 'Admin or carer access required' }, 403);
+      const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
+      const filtered = reminders.filter(r => r.id !== reminderId);
+      await env.KEN_KV.put(`reminders:${deviceId}`, JSON.stringify(filtered));
+      await logAudit(env, deviceId, auth.user.email, 'Deleted reminder', { reminderId });
+      return json({ success: true });
+    }
+
     // ===== DEVICE INFO =====
     if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
@@ -453,41 +1135,45 @@ export default {
     }
 
     // ===== HEARTBEAT =====
+    // Optimised: single KV write with combined data, TTL handles expiry
     if (request.method === 'POST' && path.match(/^\/api\/heartbeat\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
       const now = new Date().toISOString();
-      const hb = { online: true, lastSeen: now };
-      await env.KEN_KV.put(`heartbeat:${deviceId}`, JSON.stringify(hb), { expirationTtl: 90 });
-      // Store non-expiring timestamp for offline duration calculation
+      // Single write: heartbeat with lastSeen (TTL 600s = 10 min window with 5 min poll)
+      await env.KEN_KV.put(`heartbeat:${deviceId}`, JSON.stringify({ online: true, lastSeen: now }), { expirationTtl: 600 });
+      // Store non-expiring timestamp (for offline duration calc)
       await env.KEN_KV.put(`heartbeat-time:${deviceId}`, now);
-      // Register device in the device list
+      // Register device only if not already known (check with a lightweight get)
       const devices = await env.KEN_KV.get('devices:all', 'json') || [];
       if (!devices.includes(deviceId)) {
         devices.push(deviceId);
         await env.KEN_KV.put('devices:all', JSON.stringify(devices));
       }
-      // Clear lastAlertSent when device comes back online
+      return json({ success: true });
+    }
+
+    // Separate endpoint for queue/alert processing (Pi calls this less frequently)
+    if (request.method === 'POST' && path.match(/^\/api\/heartbeat\/[\w-]+\/sync$/)) {
+      const deviceId = path.split('/')[3];
+      // Clear offline alerts
       const alertSettings = await env.KEN_KV.get(`offline-alerts:${deviceId}`, 'json');
       if (alertSettings && alertSettings.lastAlertSent) {
         alertSettings.lastAlertSent = null;
         await env.KEN_KV.put(`offline-alerts:${deviceId}`, JSON.stringify(alertSettings));
       }
-      // Process offline settings queue — apply any changes queued while device was offline
+      // Process settings queue
       const queue = await env.KEN_KV.get(`queue:${deviceId}`, 'json') || [];
-      let hasQueue = false;
       if (queue.length > 0) {
-        hasQueue = true;
         for (const item of queue) {
           if (item.setting && item.value !== undefined) {
             const settings = await env.KEN_KV.get(`settings:${deviceId}`, 'json') || {};
             settings[item.setting] = item.value;
             await env.KEN_KV.put(`settings:${deviceId}`, JSON.stringify(settings));
-            await logAudit(env, deviceId, item.changedBy || 'system', 'Applied queued setting', { setting: item.setting, value: item.value });
           }
         }
         await env.KEN_KV.delete(`queue:${deviceId}`);
       }
-      return json({ success: true, queueApplied: hasQueue, queueCount: queue.length });
+      return json({ success: true, queueApplied: queue.length > 0, queueCount: queue.length });
     }
 
     if (request.method === 'GET' && path.match(/^\/api\/heartbeat\/[\w-]+$/)) {
@@ -725,10 +1411,20 @@ export default {
       const deviceId = path.split('/')[3];
       try {
         const body = await request.json();
+        // Attach authenticated user identity if available
+        const session = await getSession(request, env);
+        if (session) {
+          const user = await env.KEN_KV.get(`user:${session.email}`, 'json');
+          if (user) {
+            body.submittedBy = { email: user.email, name: user.name };
+          }
+        }
+        if (!body.timestamp) body.timestamp = new Date().toISOString();
         const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
         feedback.push(body);
         if (feedback.length > 100) feedback.splice(0, feedback.length - 100);
         await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
+        await logAudit(env, deviceId, session ? session.email : (body.from || 'device'), 'Submitted feedback', { type: body.type || 'text' });
         return json({ success: true });
       } catch {
         return json({ error: 'Invalid request' }, 400);
@@ -1038,8 +1734,9 @@ function feedbackViewerHTML(deviceId) {
           } else if (f.rating) {
             content = '<div class="item-text">Rating: ' + f.rating + '</div>';
           }
+          const submitter = f.submittedBy ? ' (' + f.submittedBy.email + ')' : '';
           return '<div class="item">' +
-            '<div class="item-from">' + (f.from || 'Unknown') + '</div>' +
+            '<div class="item-from">' + (f.from || 'Unknown') + submitter + '</div>' +
             content +
             '<div class="item-time">' + timeStr + '</div>' +
             '</div>';
@@ -2933,20 +3630,45 @@ async function requireAuth(request, env) {
 async function requireAdmin(request, env, deviceId) {
   const auth = await requireAuth(request, env);
   if (auth.error) return auth;
-  const role = auth.user.devices && auth.user.devices[deviceId] && auth.user.devices[deviceId].role;
-  if (role !== 'admin') return { error: true, response: json({ error: 'Admin access required' }, 403) };
+  const role = getUserRole(auth.user, deviceId);
+  if (role !== 'admin' && role !== 'carer' && role !== 'hq') return { error: true, response: json({ error: 'Admin access required' }, 403) };
+  auth.role = role;
   return auth;
+}
+
+function getUserRole(user, deviceId) {
+  if (!user.devices) return null;
+  // HQ users have a global role
+  if (user.globalRole === 'hq') return 'hq';
+  // Carers can have multiple devices
+  if (user.globalRole === 'carer') {
+    // Check if they have access to this specific device
+    if (user.devices[deviceId]) return 'carer';
+    if (user.carerDevices && user.carerDevices.includes(deviceId)) return 'carer';
+    return null;
+  }
+  // Normal per-device role
+  return user.devices[deviceId] ? user.devices[deviceId].role : null;
+}
+
+function requirePermission(user, deviceId, action) {
+  const role = getUserRole(user, deviceId);
+  if (!role) return { allowed: false, role: null };
+  return { allowed: hasPermission(role, action), role };
 }
 
 // ===== TOTP (RFC 6238) =====
 
 function generateTOTPSecret() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  // Generate 20 random bytes and properly base32-encode them
   const bytes = new Uint8Array(20);
   crypto.getRandomValues(bytes);
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const b of bytes) bits += b.toString(2).padStart(8, '0');
   let secret = '';
-  for (let i = 0; i < 32; i++) {
-    secret += chars[bytes[i % 20] % 32];
+  for (let i = 0; i + 5 <= bits.length; i += 5) {
+    secret += chars[parseInt(bits.slice(i, i + 5), 2)];
   }
   return secret;
 }
@@ -2984,9 +3706,9 @@ async function generateTOTPCode(secret, timeStep) {
 }
 
 async function verifyTOTP(secret, code) {
-  // Check current window and ±1 window (90 second tolerance)
+  // Check current window and ±2 windows (150 second tolerance for clock drift)
   const now = Date.now() / 1000;
-  for (const offset of [-30, 0, 30]) {
+  for (const offset of [-60, -30, 0, 30, 60]) {
     const expected = await generateTOTPCode(secret, now + offset);
     if (expected === code) return true;
   }

@@ -1419,6 +1419,112 @@
       font-size: var(--body);
     }
 
+    .msg-unread-badge {
+      background: var(--gold);
+      color: white;
+      font-size: 16px;
+      font-weight: 600;
+      min-width: 28px;
+      height: 28px;
+      border-radius: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 8px;
+      float: right;
+      margin-top: 2px;
+    }
+
+    .msg-thread-item {
+      background: rgba(245, 240, 232, 0.4);
+      border: 2px solid rgba(196, 169, 98, 0.15);
+      border-radius: 16px;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+    }
+
+    .msg-thread-item.is-reply {
+      background: rgba(196, 169, 98, 0.06);
+      border-color: rgba(196, 169, 98, 0.25);
+    }
+
+    .msg-thread-from {
+      font-family: 'Jost', sans-serif;
+      font-weight: 500;
+      font-size: var(--date-size);
+      color: var(--gold);
+      margin-bottom: 4px;
+    }
+
+    .msg-thread-text {
+      font-family: 'Jost', sans-serif;
+      font-weight: 400;
+      font-size: var(--body);
+      color: var(--ink);
+      line-height: 1.4;
+    }
+
+    .msg-thread-time {
+      font-family: 'Jost', sans-serif;
+      font-weight: 300;
+      font-size: 16px;
+      color: var(--mid);
+      margin-top: 4px;
+    }
+
+    /* ===== MEDICAL INFO ===== */
+    .medical-content {
+      padding: 8px 0;
+    }
+    .medical-empty {
+      color: var(--mid);
+      font-weight: 300;
+      font-size: var(--body);
+      padding: 8px 0;
+    }
+    .medical-item {
+      background: rgba(245, 240, 232, 0.4);
+      border: 2px solid rgba(196, 169, 98, 0.15);
+      border-radius: 12px;
+      padding: 14px 18px;
+      margin-bottom: 8px;
+    }
+    .medical-item-name {
+      font-weight: 500;
+      font-size: var(--body);
+      color: var(--ink);
+    }
+    .medical-item-detail {
+      font-weight: 400;
+      font-size: var(--date-size);
+      color: var(--mid);
+      margin-top: 2px;
+    }
+    .medical-gp-row {
+      font-size: var(--body);
+      color: var(--ink);
+      padding: 6px 0;
+      font-weight: 400;
+    }
+    .medical-gp-label {
+      font-weight: 500;
+      color: var(--gold);
+      font-size: var(--date-size);
+    }
+    .medical-care-notes {
+      font-size: var(--body);
+      color: var(--ink);
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    .medical-updated {
+      text-align: center;
+      font-size: 16px;
+      color: var(--mid);
+      font-weight: 300;
+      padding: 16px 0;
+    }
+
     /* ===== SINGLE MESSAGE VIEW ===== */
     .msg-view-body {
       padding: 32px 24px;
@@ -2338,6 +2444,7 @@
     </button>
     <button class="menu-item" onclick="menuNavTo('contacts')">Contacts</button>
     <button class="menu-item" onclick="menuNavTo('photos')">Photo Reel</button>
+    <button class="menu-item" onclick="menuNavTo('medical')">Medical Info</button>
     <button class="menu-item" onclick="menuNavTo('feedback')">Give Feedback</button>
     <button class="menu-item" onclick="menuNavTo('settings')" style="color:var(--mid);font-weight:400;">Settings</button>
   </div>
@@ -2349,10 +2456,30 @@
       <div class="settings-heading">About The Ken</div>
     </div>
     <div style="padding:32px 24px;text-align:center;">
-      <div style="font-family:'Cormorant Garamond',serif;font-weight:400;font-size:var(--header-lg);color:var(--ink);margin-bottom:4px;">The Ken</div>
-      <div style="font-family:'Jost',sans-serif;font-weight:400;font-size:var(--body);color:var(--gold);font-style:italic;margin-bottom:24px;">Simple for them. The world to you.</div>
+      <div style="font-family:'Cormorant Garamond',serif;font-weight:400;font-size:var(--header-lg);color:var(--ink);margin-bottom:4px;">Need Help?</div>
+      <div style="font-family:'Jost',sans-serif;font-weight:400;font-size:var(--body);color:var(--mid);margin-bottom:8px;">Get in touch with us anytime</div>
     </div>
     <div class="settings-section">
+      <div class="settings-section-title">Contact Us</div>
+      <div class="settings-row" style="min-height:64px;">
+        <div class="settings-label" style="font-size:var(--body-lg);">Call</div>
+        <div class="settings-value" style="color:var(--gold);font-size:var(--body-lg);font-weight:600;">+44 7845 546 551</div>
+      </div>
+      <div class="settings-row" style="min-height:64px;">
+        <div class="settings-label" style="font-size:var(--body-lg);">Email</div>
+        <div class="settings-value" style="color:var(--gold);font-size:18px;font-weight:500;">howard@bigbraincompany.co.uk</div>
+      </div>
+      <div class="settings-row" style="min-height:64px;">
+        <div class="settings-label" style="font-size:var(--body-lg);">Website</div>
+        <div class="settings-value" style="color:var(--gold);font-size:var(--body-lg);font-weight:500;">theken.uk</div>
+      </div>
+    </div>
+    <div class="settings-section" id="helpEmergencySection" style="display:none;">
+      <div class="settings-section-title" style="color:var(--gold);">Emergency Contacts</div>
+      <div id="helpEmergencyList"></div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">About This Device</div>
       <div class="settings-row">
         <div class="settings-label">Software Version</div>
         <div class="settings-value">0.2.0</div>
@@ -2374,24 +2501,51 @@
         <div class="settings-value" id="helpWifiNetwork">—</div>
       </div>
     </div>
-    <div class="settings-section">
-      <div class="settings-section-title">Contact Us</div>
-      <div class="settings-row">
-        <div class="settings-label">Call</div>
-        <div class="settings-value" style="color:var(--gold);">+44 7845 546 551</div>
-      </div>
-      <div class="settings-row">
-        <div class="settings-label">Email</div>
-        <div class="settings-value" style="color:var(--gold);">howard@bigbraincompany.co.uk</div>
-      </div>
-      <div class="settings-row">
-        <div class="settings-label">Website</div>
-        <div class="settings-value" style="color:var(--gold);">theken.uk</div>
-      </div>
-    </div>
     <div style="padding:16px 24px;">
-      <div style="font-family:'Jost',sans-serif;font-weight:400;font-size:var(--body);color:var(--mid);text-align:center;">Made with care in the UK</div>
-      <div style="font-family:'Jost',sans-serif;font-weight:400;font-size:16px;color:var(--mid);text-align:center;margin-top:4px;">Big Brain Company Ltd</div>
+      <div style="font-family:'Cormorant Garamond',serif;font-weight:400;font-size:var(--body);color:var(--ink);text-align:center;">The Ken</div>
+      <div style="font-family:'Jost',sans-serif;font-weight:400;font-size:var(--body);color:var(--gold);font-style:italic;text-align:center;margin-top:2px;">Simple for them. The world to you.</div>
+      <div style="font-family:'Jost',sans-serif;font-weight:400;font-size:16px;color:var(--mid);text-align:center;margin-top:8px;">Big Brain Company Ltd</div>
+    </div>
+  </div>
+
+  <!-- ===== MEDICAL INFO SCREEN ===== -->
+  <div class="settings-screen" id="medicalScreen">
+    <div class="settings-header">
+      <button class="settings-back" onclick="navTo('home')">Back</button>
+      <div class="settings-heading">Medical Info</div>
+    </div>
+    <div style="padding:24px;overflow-y:auto;flex:1;padding-bottom:100px;">
+      <div class="settings-section">
+        <div class="settings-section-title">GP Details</div>
+        <div id="medicalGP" class="medical-content">
+          <div class="medical-empty">No GP details recorded</div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Medications</div>
+        <div id="medicalMeds" class="medical-content">
+          <div class="medical-empty">No medications recorded</div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Allergies</div>
+        <div id="medicalAllergies" class="medical-content">
+          <div class="medical-empty">No allergies recorded</div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Conditions</div>
+        <div id="medicalConditions" class="medical-content">
+          <div class="medical-empty">No conditions recorded</div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Care Plan Notes</div>
+        <div id="medicalCareNotes" class="medical-content">
+          <div class="medical-empty">No care notes</div>
+        </div>
+      </div>
+      <div class="medical-updated" id="medicalUpdated"></div>
     </div>
   </div>
 
@@ -2650,10 +2804,22 @@
     </div>
   </div>
 
+  <!-- ===== CONVERSATION THREAD SCREEN ===== -->
+  <div class="settings-screen" id="threadScreen">
+    <div class="settings-header">
+      <button class="settings-back" onclick="showScreen('messages'); loadMessages();">Back</button>
+      <div class="settings-heading" id="threadHeading">Sarah</div>
+    </div>
+    <div class="messages-list" id="threadMessages"></div>
+    <div class="msg-view-actions" style="gap:12px;">
+      <button class="read-aloud-btn" onclick="replyFromThread()" style="background:rgba(196,169,98,0.15);color:var(--gold);border:3px solid var(--gold);">Reply</button>
+    </div>
+  </div>
+
   <!-- ===== SINGLE MESSAGE VIEW ===== -->
   <div class="settings-screen" id="messageViewScreen">
     <div class="settings-header">
-      <button class="settings-back" onclick="showScreen('messages')">Back</button>
+      <button class="settings-back" onclick="showScreen('thread'); openThread(currentThreadContact);">Back</button>
       <div class="settings-heading">Message</div>
     </div>
     <div class="msg-view-body">
@@ -2664,6 +2830,7 @@
     <div class="msg-view-actions">
       <button class="read-aloud-btn" onclick="readMessageAloud()">Read Aloud</button>
       <button class="read-aloud-btn" onclick="replyFromView()" style="background:rgba(196,169,98,0.15);color:var(--gold);border:3px solid var(--gold);">Reply</button>
+      <button class="read-aloud-btn" onclick="deleteCurrentMessage()" style="background:rgba(100,100,100,0.1);color:var(--mid);border:3px solid var(--mid);">Delete</button>
     </div>
   </div>
 
@@ -3620,6 +3787,7 @@
       document.getElementById('editContactScreen').classList.toggle('active', id === 'editContact');
       document.getElementById('qrAddScreen').classList.toggle('active', id === 'qrAdd');
       document.getElementById('messagesScreen').classList.toggle('active', id === 'messages');
+      document.getElementById('threadScreen').classList.toggle('active', id === 'thread');
       document.getElementById('messageViewScreen').classList.toggle('active', id === 'messageView');
       document.getElementById('msgNotification').classList.toggle('active', id === 'msgNotification');
       document.getElementById('reminderNotification').classList.toggle('active', id === 'reminderNotification');
@@ -3627,6 +3795,7 @@
       document.getElementById('vmPlayback').classList.toggle('active', id === 'vmPlayback');
       document.getElementById('replyScreen').classList.toggle('active', id === 'reply');
       document.getElementById('helpScreen').classList.toggle('active', id === 'help');
+      document.getElementById('medicalScreen').classList.toggle('active', id === 'medical');
       document.getElementById('feedbackScreen').classList.toggle('active', id === 'feedback');
       document.getElementById('wifiChangeScreen').classList.toggle('active', id === 'wifiChange');
       // Dismiss slideshow when navigating
@@ -4600,6 +4769,8 @@
     // ===== MESSAGES =====
     let currentMessage = null;
     let messageCheckInterval = null;
+    let currentThreadContact = '';
+    let allMessages = [];
 
     async function loadMessages() {
       try {
@@ -4608,20 +4779,88 @@
         const list = document.getElementById('messagesList');
         if (!data.messages || data.messages.length === 0) {
           list.innerHTML = '<div class="msg-empty">No messages yet.</div>';
+          allMessages = [];
           return;
         }
-        list.innerHTML = data.messages.slice().reverse().map(m => {
-          const date = new Date(m.sentAt);
-          const timeStr = formatMessageTime(date);
-          return `<div class="msg-item ${m.read ? '' : 'unread'}" onclick="viewMessage('${m.id}')">
-            <div class="msg-from">${escHtml(m.from)}</div>
-            <div class="msg-text">${escHtml(m.text.length > 80 ? m.text.substring(0, 80) + '...' : m.text)}</div>
+        allMessages = data.messages;
+        const kenName = localStorage.getItem('ken-user-name') || 'Ken';
+
+        // Group into conversations by contact name
+        const convos = {};
+        data.messages.forEach(m => {
+          // Determine which contact this message belongs to
+          let contact;
+          if (m.isReply) {
+            contact = m.to || 'Unknown';
+          } else {
+            contact = m.from || 'Unknown';
+          }
+          if (!convos[contact]) convos[contact] = { messages: [], unread: 0, latest: null };
+          convos[contact].messages.push(m);
+          if (!m.read && !m.isReply) convos[contact].unread++;
+          const t = new Date(m.sentAt).getTime();
+          if (!convos[contact].latest || t > convos[contact].latest) convos[contact].latest = t;
+        });
+
+        // Sort conversations by most recent message
+        const sorted = Object.entries(convos).sort((a, b) => (b[1].latest || 0) - (a[1].latest || 0));
+
+        list.innerHTML = sorted.map(([contact, convo]) => {
+          const lastMsg = convo.messages.slice().sort((a, b) =>
+            new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
+          )[0];
+          const preview = lastMsg.isReply
+            ? 'You: ' + lastMsg.text
+            : lastMsg.text;
+          const timeStr = formatMessageTime(new Date(lastMsg.sentAt));
+          const hasUnread = convo.unread > 0;
+          return `<div class="msg-item ${hasUnread ? 'unread' : ''}" onclick="openThread('${escHtml(contact)}')">
+            <div class="msg-from">${escHtml(contact)}${convo.unread > 0 ? '<span class="msg-unread-badge">' + convo.unread + '</span>' : ''}</div>
+            <div class="msg-text">${escHtml(preview.length > 80 ? preview.substring(0, 80) + '...' : preview)}</div>
             <div class="msg-time">${timeStr}</div>
           </div>`;
         }).join('');
       } catch {
         document.getElementById('messagesList').innerHTML = '<div class="msg-empty">Could not load messages.</div>';
       }
+    }
+
+    function openThread(contact) {
+      currentThreadContact = contact;
+      document.getElementById('threadHeading').textContent = contact;
+      const kenName = localStorage.getItem('ken-user-name') || 'Ken';
+      const threadEl = document.getElementById('threadMessages');
+
+      // Filter messages for this contact
+      const msgs = allMessages.filter(m => {
+        if (m.isReply) return (m.to || '') === contact;
+        return (m.from || '') === contact;
+      }).sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
+
+      if (msgs.length === 0) {
+        threadEl.innerHTML = '<div class="msg-empty">No messages.</div>';
+      } else {
+        threadEl.innerHTML = msgs.map(m => {
+          const sender = m.isReply ? kenName : m.from;
+          const timeStr = formatMessageTime(new Date(m.sentAt));
+          return `<div class="msg-thread-item ${m.isReply ? 'is-reply' : ''}" onclick="viewMessage('${m.id}')">
+            <div class="msg-thread-from">${escHtml(sender)}</div>
+            <div class="msg-thread-text">${escHtml(m.text)}</div>
+            <div class="msg-thread-time">${timeStr}</div>
+          </div>`;
+        }).join('');
+      }
+
+      // Mark all unread messages from this contact as read
+      msgs.filter(m => !m.read && !m.isReply).forEach(m => {
+        fetch('http://localhost:3000/api/messages/' + m.id + '/read', { method: 'POST' });
+      });
+
+      showScreen('thread');
+    }
+
+    function replyFromThread() {
+      if (currentThreadContact) openReplyScreen(currentThreadContact);
     }
 
     function formatMessageTime(date) {
@@ -4651,6 +4890,20 @@
         fetch('http://localhost:3000/api/messages/' + id + '/read', { method: 'POST' });
         updateMessageBadge();
       } catch {}
+    }
+
+    async function deleteCurrentMessage() {
+      if (!currentMessage) return;
+      await fetch('http://localhost:3000/api/messages/' + currentMessage.id, { method: 'DELETE' });
+      currentMessage = null;
+      // Reload messages data then go back to thread
+      await loadMessages();
+      if (currentThreadContact) {
+        openThread(currentThreadContact);
+      } else {
+        showScreen('messages');
+      }
+      updateMessageBadge();
     }
 
     function readMessageAloud() {
@@ -4861,7 +5114,7 @@
           await fetch(deviceData.cloudUrl + '/api/messages/' + deviceData.deviceId + '/reply', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ from: userName, text: text })
+            body: JSON.stringify({ from: userName, text: text, to: replyRecipient })
           });
         }
 
@@ -5708,6 +5961,24 @@
       } catch {
         document.getElementById('helpIpAddress').textContent = '—';
       }
+
+      // Populate emergency contacts (works offline from cache)
+      const ec = emergencyContacts.length > 0 ? emergencyContacts : JSON.parse(localStorage.getItem('ken-emergency-cache') || '[]');
+      const ecSection = document.getElementById('helpEmergencySection');
+      const ecList = document.getElementById('helpEmergencyList');
+      if (ec.length > 0) {
+        ecSection.style.display = '';
+        ecList.innerHTML = ec.map(c =>
+          '<div class="settings-row" style="min-height:64px;">' +
+            '<div class="settings-label" style="font-size:var(--body-lg);">' + escHtml(c.name) +
+              (c.relationship ? '<br><span style="font-weight:400;font-size:16px;color:var(--mid);">' + escHtml(c.relationship) + '</span>' : '') +
+            '</div>' +
+            '<div class="settings-value" style="color:var(--gold);font-size:var(--body-lg);font-weight:600;">' + escHtml(c.phoneNumber || '-') + '</div>' +
+          '</div>'
+        ).join('');
+      } else {
+        ecSection.style.display = 'none';
+      }
     }
 
     // ===== FEEDBACK =====
@@ -6013,6 +6284,99 @@
     // Poll for voicemails every 10 seconds
     setInterval(pollVoicemails, 10000);
     pollVoicemails();
+
+    // ===== MEDICAL INFO =====
+    let medicalData = null;
+    let emergencyContacts = [];
+
+    async function loadMedicalInfo() {
+      try {
+        const resp = await fetch('http://localhost:3000/api/medical');
+        medicalData = await resp.json();
+
+        // GP Details
+        const gpEl = document.getElementById('medicalGP');
+        if (medicalData.gp && (medicalData.gp.practiceName || medicalData.gp.phone || medicalData.gp.address)) {
+          gpEl.innerHTML = '<div class="medical-gp-row"><span class="medical-gp-label">Practice</span><br>' + escHtml(medicalData.gp.practiceName || '-') + '</div>' +
+            '<div class="medical-gp-row"><span class="medical-gp-label">Phone</span><br>' + escHtml(medicalData.gp.phone || '-') + '</div>' +
+            '<div class="medical-gp-row"><span class="medical-gp-label">Address</span><br>' + escHtml(medicalData.gp.address || '-') + '</div>';
+        } else {
+          gpEl.innerHTML = '<div class="medical-empty">No GP details recorded</div>';
+        }
+
+        // Medications
+        const medsEl = document.getElementById('medicalMeds');
+        if (medicalData.medications && medicalData.medications.length > 0) {
+          medsEl.innerHTML = medicalData.medications.map(m =>
+            '<div class="medical-item"><div class="medical-item-name">' + escHtml(m.name) + '</div>' +
+            '<div class="medical-item-detail">' + escHtml((m.dosage || '') + (m.frequency ? ' - ' + m.frequency : '')) + '</div></div>'
+          ).join('');
+        } else {
+          medsEl.innerHTML = '<div class="medical-empty">No medications recorded</div>';
+        }
+
+        // Allergies
+        const allergiesEl = document.getElementById('medicalAllergies');
+        if (medicalData.allergies && medicalData.allergies.length > 0) {
+          allergiesEl.innerHTML = medicalData.allergies.map(a =>
+            '<div class="medical-item"><div class="medical-item-name">' + escHtml(typeof a === 'string' ? a : a.name) + '</div></div>'
+          ).join('');
+        } else {
+          allergiesEl.innerHTML = '<div class="medical-empty">No allergies recorded</div>';
+        }
+
+        // Conditions
+        const condEl = document.getElementById('medicalConditions');
+        if (medicalData.conditions && medicalData.conditions.length > 0) {
+          condEl.innerHTML = medicalData.conditions.map(c =>
+            '<div class="medical-item"><div class="medical-item-name">' + escHtml(typeof c === 'string' ? c : c.name) + '</div></div>'
+          ).join('');
+        } else {
+          condEl.innerHTML = '<div class="medical-empty">No conditions recorded</div>';
+        }
+
+        // Care notes
+        const notesEl = document.getElementById('medicalCareNotes');
+        if (medicalData.careNotes) {
+          notesEl.innerHTML = '<div class="medical-care-notes">' + escHtml(medicalData.careNotes) + '</div>';
+        } else {
+          notesEl.innerHTML = '<div class="medical-empty">No care notes</div>';
+        }
+
+        // Updated timestamp
+        if (medicalData.updatedAt) {
+          document.getElementById('medicalUpdated').textContent = 'Last updated: ' + new Date(medicalData.updatedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+        }
+
+        // Cache locally for offline use
+        localStorage.setItem('ken-medical-cache', JSON.stringify(medicalData));
+      } catch {
+        // Try loading from offline cache
+        const cached = localStorage.getItem('ken-medical-cache');
+        if (cached) {
+          medicalData = JSON.parse(cached);
+          loadMedicalInfo(); // re-render from cache
+        }
+      }
+    }
+
+    async function loadEmergencyContacts() {
+      try {
+        const resp = await fetch('http://localhost:3000/api/contacts/emergency');
+        const data = await resp.json();
+        emergencyContacts = data.contacts || [];
+        localStorage.setItem('ken-emergency-cache', JSON.stringify(emergencyContacts));
+      } catch {
+        const cached = localStorage.getItem('ken-emergency-cache');
+        if (cached) emergencyContacts = JSON.parse(cached);
+      }
+    }
+
+    // Load medical info every 2 minutes
+    loadMedicalInfo();
+    loadEmergencyContacts();
+    setInterval(loadMedicalInfo, 120000);
+    setInterval(loadEmergencyContacts, 120000);
 
     // Boot
     init();
