@@ -1,7 +1,7 @@
 // The Ken — Cloudflare Worker API
 // Handles contacts, messaging, family interface, auth, permissions & audit
 
-const ALLOWED_ORIGINS = ['https://theken.uk', 'https://www.theken.uk', 'https://ken-api.the-ken.workers.dev'];
+const ALLOWED_ORIGINS = ['https://theken.uk', 'https://www.theken.uk', 'https://ken-api.the-ken.workers.dev', 'https://api.theken.uk'];
 
 // ===== ROLE & PERMISSIONS SYSTEM =====
 // Roles (ascending access): user, standard, admin, carer, hq
@@ -85,7 +85,7 @@ export default {
         if (!email || !password || !name) return json({ error: 'Email, password and name are required' }, 400);
         const existing = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (existing) return json({ error: 'An account with this email already exists' }, 400);
-        const passwordHash = await hashPassword(password);
+        const { hash: passwordHash, salt: passwordSalt } = await hashPassword(password);
         const devices = {};
         if (deviceId) {
           // Check for invite
@@ -98,6 +98,7 @@ export default {
           name: name.trim(),
           phone: (phone || '').trim(),
           passwordHash,
+          passwordSalt,
           photo: '',
           devices,
           createdAt: new Date().toISOString(),
@@ -119,7 +120,7 @@ export default {
         if (!email || !password) return json({ error: 'Email and password are required' }, 400);
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (!user) return json({ error: 'Invalid email or password' }, 401);
-        const hash = await hashPassword(password);
+        const { hash } = await hashPassword(password, user.passwordSalt || 'ken-salt-2026');
         if (!timingSafeEqual(hash, user.passwordHash)) return json({ error: 'Invalid email or password' }, 401);
         // Check MFA
         if (user.mfaEnabled && user.mfaSecret) {
@@ -190,7 +191,7 @@ export default {
         if (!email || !password) return json({ error: 'Email and password required' }, 400);
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (!user) return json({ error: 'Invalid credentials' }, 401);
-        const hash = await hashPassword(password);
+        const { hash } = await hashPassword(password, user.passwordSalt || 'ken-salt-2026');
         if (!timingSafeEqual(hash, user.passwordHash)) return json({ error: 'Invalid password' }, 401);
         user.mfaEnabled = false;
         delete user.mfaSecret;
@@ -245,7 +246,9 @@ export default {
         if (!reset) return json({ error: 'Reset link has expired. Please request a new one.' }, 400);
         const user = await env.KEN_KV.get(`user:${reset.email}`, 'json');
         if (!user) return json({ error: 'Account not found' }, 400);
-        user.passwordHash = await hashPassword(password);
+        const { hash: newHash, salt: newSalt } = await hashPassword(password);
+        user.passwordHash = newHash;
+        user.passwordSalt = newSalt;
         delete user.resetToken;
         await env.KEN_KV.put(`user:${reset.email}`, JSON.stringify(user));
         await env.KEN_KV.delete(`reset:${token}`);
@@ -3712,11 +3715,13 @@ function timingSafeEqual(a, b) {
   return result === 0;
 }
 
-async function hashPassword(password) {
+async function hashPassword(password, salt) {
+  if (!salt) salt = crypto.randomUUID();
   const encoder = new TextEncoder();
-  const data = encoder.encode(password + 'ken-salt-2026');
+  const data = encoder.encode(password + salt);
   const hash = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return { hash: hashHex, salt };
 }
 
 async function getSession(request, env) {
