@@ -55,6 +55,28 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
+    // ===== DEVICE AUTHENTICATION MIDDLEWARE =====
+    // All device-scoped endpoints require either a valid device API key or user session
+    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert)\/([a-f0-9-]+)/);
+    if (deviceScopeMatch) {
+      const scopedDeviceId = deviceScopeMatch[1];
+      // Public endpoints exempt from auth (QR code contact form, feedback)
+      const isPublicEndpoint = (
+        (request.method === 'POST' && path === `/api/contacts/${scopedDeviceId}`) ||
+        (request.method === 'GET' && path === `/api/contacts/${scopedDeviceId}/pending`) ||
+        (request.method === 'POST' && path === `/api/feedback/${scopedDeviceId}`)
+      );
+      if (!isPublicEndpoint) {
+        const deviceKey = request.headers.get('X-Ken-Device-Key');
+        const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${scopedDeviceId}`) : null;
+        const isDeviceAuthed = deviceKey && storedKey && deviceKey === storedKey;
+        const session = await getSession(request, env);
+        if (!isDeviceAuthed && !session) {
+          return json({ error: 'Authentication required' }, 401);
+        }
+      }
+    }
+
     // ===== AUTH ENDPOINTS =====
     if (request.method === 'POST' && path === '/api/auth/register') {
       try {
@@ -98,7 +120,7 @@ export default {
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (!user) return json({ error: 'Invalid email or password' }, 401);
         const hash = await hashPassword(password);
-        if (hash !== user.passwordHash) return json({ error: 'Invalid email or password' }, 401);
+        if (!timingSafeEqual(hash, user.passwordHash)) return json({ error: 'Invalid email or password' }, 401);
         // Check MFA
         if (user.mfaEnabled && user.mfaSecret) {
           if (!totpCode) {
@@ -169,7 +191,7 @@ export default {
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (!user) return json({ error: 'Invalid credentials' }, 401);
         const hash = await hashPassword(password);
-        if (hash !== user.passwordHash) return json({ error: 'Invalid password' }, 401);
+        if (!timingSafeEqual(hash, user.passwordHash)) return json({ error: 'Invalid password' }, 401);
         user.mfaEnabled = false;
         delete user.mfaSecret;
         delete user.mfaPendingSecret;
@@ -1149,7 +1171,13 @@ export default {
         devices.push(deviceId);
         await env.KEN_KV.put('devices:all', JSON.stringify(devices));
       }
-      return json({ success: true });
+      // Generate device API key on first heartbeat (used for Pi auth)
+      let deviceApiKey = await env.KEN_KV.get(`device-key:${deviceId}`);
+      if (!deviceApiKey) {
+        deviceApiKey = crypto.randomUUID() + '-' + crypto.randomUUID();
+        await env.KEN_KV.put(`device-key:${deviceId}`, deviceApiKey);
+      }
+      return json({ success: true, deviceKey: deviceApiKey });
     }
 
     // Separate endpoint for queue/alert processing (Pi calls this less frequently)
@@ -3603,6 +3631,19 @@ function familyHTML(deviceId) {
 }
 
 // ===== AUTH & PERMISSION HELPERS =====
+
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  const encoder = new TextEncoder();
+  const bufA = encoder.encode(a);
+  const bufB = encoder.encode(b);
+  let result = 0;
+  for (let i = 0; i < bufA.length; i++) {
+    result |= bufA[i] ^ bufB[i];
+  }
+  return result === 0;
+}
 
 async function hashPassword(password) {
   const encoder = new TextEncoder();
