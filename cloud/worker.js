@@ -57,7 +57,7 @@ export default {
 
     // ===== DEVICE AUTHENTICATION MIDDLEWARE =====
     // All device-scoped endpoints require either a valid device API key or user session
-    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit)\/([a-f0-9-]+)/);
+    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback)\/([a-f0-9-]+)/);
     if (deviceScopeMatch) {
       const scopedDeviceId = deviceScopeMatch[1];
       // Public endpoints exempt from auth (QR code contact form, feedback)
@@ -409,6 +409,10 @@ export default {
     // ===== ADMIN FEEDBACK VIEWER =====
     if (request.method === 'GET' && path.match(/^\/admin\/feedback\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return new Response('Unauthorized — please log in via the portal first.', { status: 401, headers: { 'Content-Type': 'text/plain' } });
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!['admin', 'hq'].includes(userRole)) return new Response('Forbidden — admin or HQ access required.', { status: 403, headers: { 'Content-Type': 'text/plain' } });
       return html(feedbackViewerHTML(deviceId));
     }
 
@@ -625,6 +629,10 @@ export default {
     // Update a contact
     if (request.method === 'POST' && path.match(/^\/api\/contacts\/[\w-]+\/update$/)) {
       const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'edit:contacts')) return json({ error: 'Insufficient permissions' }, 403);
       try {
         const body = await request.json();
         const { id, name, relationship, phoneNumber } = body;
@@ -645,6 +653,10 @@ export default {
     // Delete a contact
     if (request.method === 'POST' && path.match(/^\/api\/contacts\/[\w-]+\/delete$/)) {
       const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'edit:contacts')) return json({ error: 'Insufficient permissions' }, 403);
       try {
         const body = await request.json();
         const { id } = body;
@@ -664,6 +676,10 @@ export default {
     // Toggle emergency contact flag
     if (request.method === 'POST' && path.match(/^\/api\/contacts\/[\w-]+\/emergency$/)) {
       const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'edit:contacts')) return json({ error: 'Insufficient permissions' }, 403);
       try {
         const body = await request.json();
         const { id, isEmergencyContact } = body;
@@ -735,6 +751,16 @@ export default {
     // ===== MEDICAL INFO =====
     if (request.method === 'GET' && path.match(/^\/api\/medical\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
+      // Check if device-key authenticated (Pi has full access)
+      const medDeviceKey = request.headers.get('X-Ken-Device-Key');
+      const medStoredKey = medDeviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      const medIsDeviceAuthed = medDeviceKey && medStoredKey && medDeviceKey === medStoredKey;
+      if (!medIsDeviceAuthed) {
+        const auth = await requireAuth(request, env);
+        if (auth.error) return auth.response;
+        const userRole = getUserRole(auth.user, deviceId);
+        if (!hasPermission(userRole, 'view:medical')) return json({ error: 'Insufficient permissions' }, 403);
+      }
       const medical = await env.KEN_KV.get(`medical:${deviceId}`, 'json') || { gp: {}, medications: [], allergies: [], conditions: [], careNotes: '' };
       return json(medical);
     }
@@ -859,6 +885,10 @@ export default {
 
     if (request.method === 'GET' && path.match(/^\/api\/carer\/patient\/[\w-]+$/)) {
       const deviceId = path.split('/')[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (userRole !== 'carer' && userRole !== 'admin') return json({ error: 'Carer or admin access required' }, 403);
       const patient = await env.KEN_KV.get(`patient:${deviceId}`, 'json') || {};
       return json(patient);
     }
@@ -892,6 +922,8 @@ export default {
       const deviceId = path.split('/')[4];
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (userRole !== 'carer' && userRole !== 'admin') return json({ error: 'Carer or admin access required' }, 403);
       const alerts = await env.KEN_KV.get(`carer-alerts:${deviceId}:${auth.user.email}`, 'json') || { enabled: true, thresholdMinutes: 60, outsideNightlightOnly: true, method: ['email'] };
       return json(alerts);
     }
@@ -1001,6 +1033,8 @@ export default {
       const deviceId = path.split('/')[4];
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (userRole !== 'hq') return json({ error: 'HQ role required' }, 403);
       const msgAccess = await env.KEN_KV.get(`hq-access:${deviceId}:${auth.user.email}:messages`, 'json');
       const vmAccess = await env.KEN_KV.get(`hq-access:${deviceId}:${auth.user.email}:voicemail`, 'json');
       return json({
@@ -1044,6 +1078,8 @@ export default {
       const deviceId = path.split('/')[3];
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'remote:view_pi')) return json({ error: 'HQ role required for screen viewing' }, 403);
       await env.KEN_KV.delete(`screen:active:${deviceId}`);
       await env.KEN_KV.delete(`screen:frame:${deviceId}`);
       await logAudit(env, deviceId, auth.user.email, 'Screen viewing stopped', {});
@@ -1053,6 +1089,14 @@ export default {
     // Pi checks if screen viewing is requested (polls this)
     if (request.method === 'GET' && path.match(/^\/api\/screen\/[\w-]+\/status$/)) {
       const deviceId = path.split('/')[3];
+      // Check if device-key authenticated (Pi has full access)
+      const screenDeviceKey = request.headers.get('X-Ken-Device-Key');
+      const screenStoredKey = screenDeviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      const screenIsDeviceAuthed = screenDeviceKey && screenStoredKey && screenDeviceKey === screenStoredKey;
+      if (!screenIsDeviceAuthed) {
+        const auth = await requireAuth(request, env);
+        if (auth.error) return auth.response;
+      }
       const active = await env.KEN_KV.get(`screen:active:${deviceId}`, 'json');
       return json({ active: !!active, ...(active || {}) });
     }
@@ -1253,6 +1297,10 @@ export default {
     // ===== OFFLINE ALERT SETTINGS =====
     if (request.method === 'POST' && path.match(/^\/api\/settings\/[\w-]+\/offline-alerts$/)) {
       const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'edit:settings')) return json({ error: 'Insufficient permissions' }, 403);
       try {
         const body = await request.json();
         const settings = {
@@ -1363,6 +1411,16 @@ export default {
     // ===== DO NOT DISTURB / SCHEDULE =====
     if (request.method === 'POST' && path.match(/^\/api\/settings\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
+      // Check if device-key authenticated (Pi has full access)
+      const settingsDeviceKey = request.headers.get('X-Ken-Device-Key');
+      const settingsStoredKey = settingsDeviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      const settingsIsDeviceAuthed = settingsDeviceKey && settingsStoredKey && settingsDeviceKey === settingsStoredKey;
+      if (!settingsIsDeviceAuthed) {
+        const auth = await requireAuth(request, env);
+        if (auth.error) return auth.response;
+        const userRole = getUserRole(auth.user, deviceId);
+        if (!hasPermission(userRole, 'edit:settings')) return json({ error: 'Insufficient permissions' }, 403);
+      }
       try {
         const body = await request.json();
         await env.KEN_KV.put(`settings:${deviceId}`, JSON.stringify(body));
@@ -1435,6 +1493,10 @@ export default {
     // ===== PHOTOS =====
     if (request.method === 'POST' && path.match(/^\/api\/photos\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'edit:settings')) return json({ error: 'Insufficient permissions' }, 403);
       try {
         const body = await request.json();
         const { photo, caption } = body;
@@ -1466,6 +1528,10 @@ export default {
       const parts = path.split('/');
       const deviceId = parts[3];
       const photoId = parts[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'edit:settings')) return json({ error: 'Insufficient permissions' }, 403);
       const photos = await env.KEN_KV.get(`photos:${deviceId}`, 'json') || [];
       const filtered = photos.filter(p => p.id !== photoId);
       await env.KEN_KV.put(`photos:${deviceId}`, JSON.stringify(filtered));
@@ -1488,12 +1554,99 @@ export default {
           }
         }
         if (!body.timestamp) body.timestamp = new Date().toISOString();
+        // Ticket system: assign id, status, and empty replies array
+        body.id = crypto.randomUUID();
+        body.status = 'open';
+        body.replies = [];
         const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
         feedback.push(body);
         if (feedback.length > 100) feedback.splice(0, feedback.length - 100);
         await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
         await logAudit(env, deviceId, session ? session.email : (body.from || 'device'), 'Submitted feedback', { type: body.type || 'text' });
-        return json({ success: true });
+        return json({ success: true, ticketId: body.id });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // ===== FEEDBACK TICKET ENDPOINTS =====
+    // GET single ticket with replies
+    if (request.method === 'GET' && path.match(/^\/api\/feedback\/[\w-]+\/[a-f0-9-]{36}$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const ticketId = parts[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+      const ticket = feedback.find(f => f.id === ticketId);
+      if (!ticket) return json({ error: 'Ticket not found' }, 404);
+      // HQ/admin see any ticket; others only their own
+      if (!['admin', 'hq'].includes(userRole) && ticket.fromEmail !== auth.user.email) {
+        return json({ error: 'Access denied' }, 403);
+      }
+      return json({ ticket });
+    }
+
+    // POST reply to a ticket
+    if (request.method === 'POST' && path.match(/^\/api\/feedback\/[\w-]+\/[a-f0-9-]{36}\/reply$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const ticketId = parts[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+      const ticket = feedback.find(f => f.id === ticketId);
+      if (!ticket) return json({ error: 'Ticket not found' }, 404);
+      // HQ/admin can reply to any; others only their own
+      if (!['admin', 'hq'].includes(userRole) && ticket.fromEmail !== auth.user.email) {
+        return json({ error: 'Access denied' }, 403);
+      }
+      try {
+        const body = await request.json();
+        if (!body.text) return json({ error: 'Reply text is required' }, 400);
+        const reply = {
+          id: crypto.randomUUID(),
+          from: auth.user.name || auth.user.email,
+          fromEmail: auth.user.email,
+          role: userRole || 'user',
+          text: body.text,
+          image: body.image || null,
+          timestamp: new Date().toISOString()
+        };
+        if (!ticket.replies) ticket.replies = [];
+        ticket.replies.push(reply);
+        await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
+        await logAudit(env, deviceId, auth.user.email, 'Replied to feedback ticket', { ticketId });
+        return json({ success: true, reply });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // POST update ticket status (HQ/admin only)
+    if (request.method === 'POST' && path.match(/^\/api\/feedback\/[\w-]+\/[a-f0-9-]{36}\/status$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const ticketId = parts[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!['admin', 'hq'].includes(userRole)) return json({ error: 'Admin or HQ access required' }, 403);
+      const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+      const ticket = feedback.find(f => f.id === ticketId);
+      if (!ticket) return json({ error: 'Ticket not found' }, 404);
+      try {
+        const body = await request.json();
+        const validStatuses = ['open', 'in-progress', 'resolved', 'closed'];
+        if (!body.status || !validStatuses.includes(body.status)) {
+          return json({ error: 'Invalid status. Must be: ' + validStatuses.join(', ') }, 400);
+        }
+        ticket.status = body.status;
+        await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
+        await logAudit(env, deviceId, auth.user.email, 'Updated feedback ticket status', { ticketId, status: body.status });
+        return json({ success: true, status: ticket.status });
       } catch {
         return json({ error: 'Invalid request' }, 400);
       }
@@ -1501,7 +1654,15 @@ export default {
 
     if (request.method === 'GET' && path.match(/^\/api\/feedback\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
       const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+      // HQ and admin see all; others see only their own
+      if (!['admin', 'hq'].includes(userRole)) {
+        const userFeedback = feedback.filter(f => f.fromEmail === auth.user.email);
+        return json({ feedback: userFeedback });
+      }
       return json({ feedback });
     }
 
@@ -1823,6 +1984,14 @@ function feedbackViewerHTML(deviceId) {
     .item-audio audio { width: 100%; }
     .empty { text-align: center; padding: 48px; color: #6B6459; }
     .voice-badge { display: inline-block; background: rgba(196,169,98,0.15); color: #C4A962; font-size: 12px; font-weight: 500; padding: 2px 8px; border-radius: 6px; margin-left: 8px; }
+    .status-badge { display: inline-block; font-size: 12px; font-weight: 500; padding: 2px 10px; border-radius: 6px; margin-left: 8px; }
+    .status-open { background: rgba(59,130,246,0.15); color: #3B82F6; }
+    .status-in-progress { background: rgba(245,158,11,0.15); color: #F59E0B; }
+    .status-resolved { background: rgba(34,197,94,0.15); color: #22C55E; }
+    .status-closed { background: rgba(107,100,89,0.15); color: #6B6459; }
+    .category-badge { display: inline-block; background: rgba(139,92,246,0.12); color: #8B5CF6; font-size: 12px; font-weight: 500; padding: 2px 8px; border-radius: 6px; margin-right: 8px; }
+    .reply-count { display: inline-block; font-size: 12px; color: #6B6459; margin-left: 8px; }
+    .item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
   </style>
 </head>
 <body>
@@ -1866,16 +2035,23 @@ function feedbackViewerHTML(deviceId) {
           }
           let categoryHtml = '';
           if (f.category) {
-            categoryHtml = '<div style="margin-bottom:8px;"><strong>Category:</strong> ' + f.category + '</div>';
+            categoryHtml = '<span class="category-badge">' + f.category + '</span>';
           }
+          const statusClass = f.status ? 'status-' + f.status : 'status-open';
+          const statusLabel = f.status ? f.status.replace('-', ' ') : 'open';
+          const statusHtml = '<span class="status-badge ' + statusClass + '">' + statusLabel + '</span>';
+          const replyCount = f.replies ? f.replies.length : 0;
+          const replyHtml = replyCount > 0 ? '<span class="reply-count">' + replyCount + ' repl' + (replyCount === 1 ? 'y' : 'ies') + '</span>' : '';
           const submitter = f.submittedBy ? ' (' + f.submittedBy.email + ')' : '';
           return '<div class="item">' +
-            '<div class="item-from">' + (f.from || 'Unknown') + submitter + '</div>' +
-            categoryHtml +
+            '<div class="item-meta">' +
+              '<span class="item-from" style="margin-bottom:0;">' + (f.from || 'Unknown') + submitter + '</span>' +
+              statusHtml + categoryHtml + replyHtml +
+            '</div>' +
             content +
             screenshotHtml +
             recentScreensHtml +
-            '<div class="item-time">' + timeStr + '</div>' +
+            '<div class="item-time">' + timeStr + (f.id ? ' &middot; #' + f.id.slice(0,8) : '') + '</div>' +
             '</div>';
         }).join('');
       } catch {
