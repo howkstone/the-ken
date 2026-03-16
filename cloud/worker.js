@@ -223,26 +223,14 @@ export default {
         // Store token on user for reference
         user.resetToken = resetToken;
         await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
-        // Send email via Resend (if API key configured)
-        if (env.RESEND_API_KEY) {
-          try {
-            await fetch('https://api.resend.com/emails', {
-              method: 'POST',
-              headers: { 'Authorization': 'Bearer ' + env.RESEND_API_KEY, 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                from: 'The Ken <noreply@theken.uk>',
-                to: email.toLowerCase(),
-                subject: 'Reset your password — The Ken',
-                html: '<div style="font-family:Jost,Helvetica,sans-serif;max-width:480px;margin:0 auto;padding:32px;">' +
-                  '<h1 style="font-size:24px;font-weight:300;color:#1A1714;">Reset your password</h1>' +
-                  '<p style="color:#6B6459;line-height:1.7;">Click the link below to set a new password. This link expires in 1 hour.</p>' +
-                  '<a href="https://theken.uk/portal/?reset=' + resetToken + '" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Reset Password</a>' +
-                  '<p style="color:#6B6459;font-size:13px;margin-top:24px;">If you didn\'t request this, you can ignore this email.</p>' +
-                  '<p style="color:#6B6459;font-size:12px;opacity:0.5;margin-top:32px;">&copy; 2026 The Ken</p></div>'
-              })
-            });
-          } catch {}
-        }
+        // Send password reset email
+        await sendEmail(env, email.toLowerCase(),
+          'Reset your password \u2014 The Ken',
+          'Reset your password',
+          '<p style="color:#6B6459;line-height:1.7;">Click the button below to set a new password. This link expires in 1 hour.</p>' +
+          '<a href="https://theken.uk/portal/?reset=' + resetToken + '" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Reset Password</a>' +
+          '<p style="color:#6B6459;font-size:13px;margin-top:24px;">If you didn\'t request this, you can safely ignore this email.</p>'
+        );
         return json({ success: true, resetToken: env.RESEND_API_KEY ? undefined : resetToken });
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
@@ -342,6 +330,16 @@ export default {
         if (auth.error) return auth.response;
         await env.KEN_KV.put(`invite:${deviceId}:${email.toLowerCase()}`, JSON.stringify({ role, invitedBy: auth.user.email, createdAt: new Date().toISOString() }));
         await logAudit(env, deviceId, auth.user.email, 'Invited user', { email: email.toLowerCase(), role });
+        // Send invitation email
+        const inviterName = auth.user.name || auth.user.email;
+        const registerUrl = 'https://theken.uk/portal/?invite=' + deviceId;
+        await sendEmail(env, email.toLowerCase(),
+          inviterName + ' invited you to The Ken',
+          'You\'ve been invited',
+          '<p style="color:#6B6459;line-height:1.7;">' + inviterName + ' has invited you to join The Ken as <strong>' + role + '</strong>.</p>' +
+          '<p style="color:#6B6459;line-height:1.7;">The Ken is a simplified video calling device that keeps families connected. Create your account to get started.</p>' +
+          '<a href="' + registerUrl + '" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Create Account</a>'
+        );
         return json({ success: true });
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
@@ -916,6 +914,25 @@ export default {
         requests.push(accessRequest);
         await env.KEN_KV.put(`hq-access-requests:${deviceId}`, JSON.stringify(requests));
         await logAudit(env, deviceId, auth.user.email, 'HQ requested access', { contentType, reason: reason.trim() });
+        // Email admin/carer users for this device so they can approve
+        const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+        for (const key of allUsers.keys) {
+          try {
+            const u = await env.KEN_KV.get(key.name, 'json');
+            if (!u || !u.devices || !u.devices[deviceId]) continue;
+            const uRole = u.devices[deviceId].role;
+            if (uRole === 'admin' || uRole === 'carer' || u.poa) {
+              await sendEmail(env, u.email,
+                'Access request from HQ \u2014 The Ken',
+                'HQ access request',
+                '<p style="color:#6B6459;line-height:1.7;"><strong>' + (auth.user.name || auth.user.email) + '</strong> (HQ) is requesting access to <strong>' + contentType + '</strong>.</p>' +
+                '<p style="color:#6B6459;line-height:1.7;">Reason: ' + reason.trim() + '</p>' +
+                '<a href="https://theken.uk/portal/" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Review Request</a>' +
+                '<p style="color:#6B6459;font-size:13px;margin-top:16px;">Once approved, HQ will have time-limited access to the requested content.</p>'
+              );
+            }
+          } catch {}
+        }
         return json({ success: true, requestId: rid });
       } catch {
         return json({ error: 'Invalid request' }, 400);
@@ -1623,6 +1640,25 @@ export default {
         if (history.length > 100) history.splice(0, history.length - 100);
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
 
+        // Email all admin/carer users for this device
+        try {
+          const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+          for (const key of allUsers.keys) {
+            const u = await env.KEN_KV.get(key.name, 'json');
+            if (!u || !u.devices || !u.devices[deviceId]) continue;
+            const uRole = u.devices[deviceId].role;
+            if (uRole === 'admin' || uRole === 'carer') {
+              await sendEmail(env, u.email,
+                deviceName + ' is offline \u2014 The Ken',
+                'Device offline alert',
+                '<p style="color:#6B6459;line-height:1.7;"><strong>' + deviceName + '</strong> has been offline for <strong>' + offlineMinutes + ' minutes</strong>.</p>' +
+                '<p style="color:#6B6459;line-height:1.7;">Please check the device\'s internet connection and power supply.</p>' +
+                '<a href="https://theken.uk/portal/" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Open Portal</a>'
+              );
+            }
+          }
+        } catch {}
+
         // Mark alert as sent
         alertSettings.lastAlertSent = new Date().toISOString();
         await env.KEN_KV.put(`offline-alerts:${deviceId}`, JSON.stringify(alertSettings));
@@ -1708,6 +1744,37 @@ function html(body) {
   return new Response(body, {
     headers: { 'Content-Type': 'text/html' },
   });
+}
+
+// ===== EMAIL (Resend) =====
+function emailTemplate(heading, bodyHtml) {
+  return '<div style="font-family:Jost,Helvetica,sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#FDFAF5;">' +
+    '<div style="border-bottom:2px solid #C4A962;padding-bottom:16px;margin-bottom:24px;">' +
+      '<span style="font-family:Georgia,serif;font-size:20px;font-weight:300;letter-spacing:3px;color:#1A1714;">THE KEN</span>' +
+    '</div>' +
+    '<h1 style="font-size:22px;font-weight:500;color:#1A1714;margin-bottom:12px;">' + heading + '</h1>' +
+    bodyHtml +
+    '<p style="color:#6B6459;font-size:12px;opacity:0.5;margin-top:32px;border-top:1px solid #E8E3DA;padding-top:16px;">&copy; 2026 The Ken &middot; theken.uk</p>' +
+  '</div>';
+}
+
+async function sendEmail(env, to, subject, heading, bodyHtml) {
+  if (!env.RESEND_API_KEY) return false;
+  try {
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + env.RESEND_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'The Ken <noreply@theken.uk>',
+        to,
+        subject,
+        html: emailTemplate(heading, bodyHtml),
+      })
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ===== ADD CONTACT HTML =====
