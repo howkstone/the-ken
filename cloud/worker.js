@@ -20,7 +20,7 @@ const PERMISSIONS = {
   'edit:care_notes':         ['carer'],
   'edit:settings':           ['admin', 'carer'],
   'edit:reminders':          ['admin', 'carer'],
-  'view:audit':              ['admin', 'carer', 'hq'],
+  'view:audit':              ['admin', 'hq'],
   'manage:multiple_devices': ['carer', 'hq'],
   'manage:invites':          ['admin'],
   'view:all_devices':        ['hq'],
@@ -57,7 +57,7 @@ export default {
 
     // ===== DEVICE AUTHENTICATION MIDDLEWARE =====
     // All device-scoped endpoints require either a valid device API key or user session
-    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert)\/([a-f0-9-]+)/);
+    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit)\/([a-f0-9-]+)/);
     if (deviceScopeMatch) {
       const scopedDeviceId = deviceScopeMatch[1];
       // Public endpoints exempt from auth (QR code contact form, feedback)
@@ -83,6 +83,7 @@ export default {
         const body = await request.json();
         const { email, password, name, phone, deviceId } = body;
         if (!email || !password || !name) return json({ error: 'Email, password and name are required' }, 400);
+        if (password.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400);
         const existing = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (existing) return json({ error: 'An account with this email already exists' }, 400);
         const { hash: passwordHash, salt: passwordSalt } = await hashPassword(password);
@@ -347,13 +348,32 @@ export default {
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
-    // ===== AUDIT LOG ENDPOINT =====
+    // ===== AUDIT LOG ENDPOINTS =====
     if (request.method === 'GET' && path.match(/^\/api\/audit\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
-      const auth = await requireAdmin(request, env, deviceId);
+      const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
+      const perm = requirePermission(auth.user, deviceId, 'view:audit');
+      if (!perm.allowed) return json({ error: 'Insufficient permissions' }, 403);
       const audit = await env.KEN_KV.get(`audit:${deviceId}`, 'json') || [];
       return json({ audit });
+    }
+
+    // Device audit log — POST from Pi device (requires device key auth)
+    if (request.method === 'POST' && path.match(/^\/api\/audit\/[\w-]+\/log$/)) {
+      const deviceId = path.split('/')[3];
+      const deviceKey = request.headers.get('X-Ken-Device-Key');
+      const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      if (!deviceKey || !storedKey || deviceKey !== storedKey) {
+        return json({ error: 'Device authentication required' }, 401);
+      }
+      try {
+        const body = await request.json();
+        const { action, details } = body;
+        if (!action) return json({ error: 'Action required' }, 400);
+        await logAudit(env, deviceId, 'device', action, details || {});
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
     // ===== SETTINGS QUEUE (offline changes) =====
@@ -1832,10 +1852,15 @@ function feedbackViewerHTML(deviceId) {
           } else if (f.rating) {
             content = '<div class="item-text">Rating: ' + f.rating + '</div>';
           }
+          let screenshotHtml = '';
+          if (f.screenshot) {
+            screenshotHtml = '<div style="margin-top:8px;"><img src="' + f.screenshot + '" style="max-width:100%;border-radius:8px;border:1px solid rgba(196,169,98,0.2);" alt="Screenshot at time of feedback" /></div>';
+          }
           const submitter = f.submittedBy ? ' (' + f.submittedBy.email + ')' : '';
           return '<div class="item">' +
             '<div class="item-from">' + (f.from || 'Unknown') + submitter + '</div>' +
             content +
+            screenshotHtml +
             '<div class="item-time">' + timeStr + '</div>' +
             '</div>';
         }).join('');

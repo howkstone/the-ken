@@ -42,6 +42,16 @@ function deviceHeaders(extra) {
   return Object.assign(headers, extra || {});
 }
 
+// Log events to cloud audit trail (fire-and-forget)
+function logToAudit(action, details) {
+  if (!DEVICE_API_KEY) return; // Can't log without auth
+  cloudFetch(`${CLOUD_API}/api/audit/${DEVICE_ID}/log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, details: typeof details === 'string' ? { info: details } : details })
+  }).catch(() => {}); // Silent fail — never block main flow
+}
+
 const POLL_INTERVAL = 60000;       // Contacts, messages: every 60s (was 15s)
 const CALL_POLL_INTERVAL = 10000;  // Calls: every 10s (was 3s)
 const CALLS_FILE = path.join(__dirname, 'calls.json');
@@ -68,6 +78,7 @@ function readCallHistory() {
 }
 
 function logCall(type, contactName, roomUrl, status) {
+  logToAudit('Call ' + status, { type, contact: contactName });
   const history = readCallHistory();
   history.calls.push({
     id: crypto.randomUUID(),
@@ -267,6 +278,7 @@ async function ensureDeviceRoom() {
     console.log('Room registered with cloud');
   } catch (err) {
     console.error('Room setup failed:', err.message);
+    logToAudit('Error', { message: 'Room setup failed: ' + err.message });
     deviceRoomUrl = 'https://theken.daily.co/' + roomName;
   }
 }
@@ -282,6 +294,7 @@ async function pollForCalls() {
     if (data.call && (!currentIncomingCall || currentIncomingCall.id !== data.call.id)) {
       currentIncomingCall = data.call;
       console.log(`Incoming call from ${data.call.from}`);
+      logToAudit('Incoming call', { from: data.call.from });
       // Write to calls.json so the Electron frontend can pick it up
       fs.writeFileSync(CALLS_FILE, JSON.stringify(data.call, null, 2));
     }
@@ -528,6 +541,7 @@ async function captureAndUploadFrame() {
     });
   } catch (err) {
     console.error('Screen capture failed:', err.message);
+    logToAudit('Error', { message: 'Screen capture failed: ' + err.message });
   }
 }
 
@@ -744,6 +758,7 @@ const server = http.createServer(async (req, res) => {
     req.on('end', async () => {
       try {
         const { contactName, roomUrl } = JSON.parse(body);
+        logToAudit('Initiated call', { contact: contactName });
         await cloudFetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/outbound`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -761,6 +776,7 @@ const server = http.createServer(async (req, res) => {
 
   // Clear outbound call signal (call ended)
   if (req.method === 'POST' && req.url === '/api/calls/outbound/clear') {
+    logToAudit('Call ended', {});
     cloudFetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/outbound/clear`, { method: 'POST' }).catch(() => {});
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
@@ -794,7 +810,11 @@ const server = http.createServer(async (req, res) => {
     const msgId = req.url.split('/')[3];
     const store = readMessages();
     const msg = store.messages.find(m => m.id === msgId);
-    if (msg) { msg.read = true; writeMessages(store); }
+    if (msg) {
+      logToAudit('Viewed message', { from: msg.from, messageId: msgId });
+      msg.read = true;
+      writeMessages(store);
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
     return;
@@ -1056,6 +1076,41 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Submit feedback (captures screenshot and forwards to cloud)
+  if (req.method === 'POST' && req.url === '/api/feedback') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const feedbackBody = JSON.parse(body);
+        // Capture screenshot to include with feedback
+        try {
+          const win = global.kenWindow;
+          if (win && !win.isDestroyed()) {
+            const image = await win.webContents.capturePage();
+            const resized = image.resize({ width: 480, quality: 'good' });
+            const jpegBuffer = resized.toJPEG(70);
+            feedbackBody.screenshot = 'data:image/jpeg;base64,' + jpegBuffer.toString('base64');
+          }
+        } catch (err) {
+          console.error('Feedback screenshot capture failed:', err.message);
+        }
+        // Forward to cloud
+        await cloudFetch(`${CLOUD_API}/api/feedback/${DEVICE_ID}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(feedbackBody)
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Failed to submit feedback' }));
+      }
+    });
+    return;
+  }
+
   // Network info (IP address)
   if (req.method === 'GET' && req.url === '/api/network-info') {
     const os = require('os');
@@ -1075,6 +1130,24 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Audit log relay — frontend posts events here, server forwards to cloud
+  if (req.method === 'POST' && req.url === '/api/audit/log') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { action, details } = JSON.parse(body);
+        if (action) logToAudit(action, details || {});
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid request' }));
+      }
+    });
+    return;
+  }
+
   res.writeHead(404);
   res.end('Not found');
 });
@@ -1084,6 +1157,8 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('Device ID:', DEVICE_ID);
   console.log('Cloud API:', CLOUD_API);
   console.log('Polling every ' + (POLL_INTERVAL / 1000) + 's for contacts and messages');
+  // Log device startup to audit trail (delayed to allow heartbeat to set device key)
+  setTimeout(() => logToAudit('Device started', { deviceId: DEVICE_ID }), 10000);
 });
 
 module.exports = server;

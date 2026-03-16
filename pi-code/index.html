@@ -3806,6 +3806,15 @@
       // Update nav highlight
       // Close menu when changing screens
       closeMenu();
+      // Log navigation to audit trail (skip transient screens)
+      const auditScreens = ['home', 'contacts', 'messages', 'settings', 'help', 'medical', 'contactCard', 'thread'];
+      if (auditScreens.includes(id)) {
+        fetch('http://localhost:3000/api/audit/log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'Navigated to ' + id })
+        }).catch(() => {});
+      }
     }
 
     // ===== VIDEO CALLING =====
@@ -5103,8 +5112,8 @@
         const deviceData = await deviceResp.json();
 
         if (replyRecipient === 'The Ken Team') {
-          // Route to feedback endpoint
-          await fetch(deviceData.cloudUrl + '/api/feedback/' + deviceData.deviceId, {
+          // Route to feedback endpoint via local server (captures screenshot)
+          await fetch('http://localhost:3000/api/feedback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ type: 'typed', from: userName, text: text, timestamp: new Date().toISOString() })
@@ -6126,7 +6135,8 @@
           const deviceResp = await fetch('http://localhost:3000/api/device-id');
           const deviceData = await deviceResp.json();
           const userName = localStorage.getItem('ken-user-name') || 'Unknown';
-          await fetch(deviceData.cloudUrl + '/api/feedback/' + deviceData.deviceId, {
+          // Route via local server (captures screenshot)
+          await fetch('http://localhost:3000/api/feedback', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
