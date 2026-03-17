@@ -5950,6 +5950,20 @@
     // Check reminders every 30 seconds
     setInterval(checkReminders, 30000);
 
+    // Check for remote PIN reset (admin can clear passcode remotely)
+    async function checkRemotePinReset() {
+      try {
+        const resp = await fetch('http://localhost:3000/api/check-pin-reset');
+        const data = await resp.json();
+        if (data.clearPasscode) {
+          localStorage.removeItem('ken-passcode-enabled');
+          localStorage.removeItem('ken-password');
+          console.log('Remote PIN reset: passcode cleared');
+        }
+      } catch {}
+    }
+    setInterval(checkRemotePinReset, 60000);
+
     // ===== QUIET HOURS (DND) =====
     let quietHoursEnabled = localStorage.getItem('ken-quiet-enabled') !== 'false';
     let quietStart = parseInt(localStorage.getItem('ken-quiet-start') || '21');

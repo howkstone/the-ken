@@ -502,6 +502,13 @@ async function pollForSettingsQueue() {
     if (data.queue && data.queue.length > 0) {
       const settings = readSettings();
       for (const item of data.queue) {
+        if (item.setting === 'clearPasscode' && item.value) {
+          // Remote PIN reset: write a flag file that the frontend checks
+          fs.writeFileSync(path.join(__dirname, '.clear-passcode'), 'true');
+          console.log('Remote PIN reset: passcode clear flag set');
+          logToAudit('Remote PIN reset applied', {});
+          continue;
+        }
         if (item.setting && item.value !== undefined) {
           settings[item.setting] = item.value;
           console.log(`Applied queued setting: ${item.setting} = ${item.value}`);
@@ -884,6 +891,20 @@ const server = http.createServer(async (req, res) => {
     }).catch(() => {});
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
+    return;
+  }
+
+  // Check for remote PIN reset flag
+  if (req.method === 'GET' && req.url === '/api/check-pin-reset') {
+    const flagFile = path.join(__dirname, '.clear-passcode');
+    if (fs.existsSync(flagFile)) {
+      fs.unlinkSync(flagFile);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ clearPasscode: true }));
+    } else {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ clearPasscode: false }));
+    }
     return;
   }
 

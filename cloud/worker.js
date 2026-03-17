@@ -545,7 +545,7 @@ export default {
       try {
         const body = await request.json();
         // Whitelist allowed settings to prevent arbitrary injection
-        const ALLOWED_SETTINGS = ['dndEnabled', 'dndStart', 'dndEnd', 'nightlightEnabled', 'nightlightStart', 'nightlightEnd', 'nightlightBrightness', 'userName', 'fontSize', 'language', 'clockFormat', 'autoAnswer', 'ringVolume', 'callVolume', 'readVolume', 'autoRead', 'readDelay', 'quietEnabled', 'quietStart', 'quietEnd', 'urgentRing', 'urgentAnswer'];
+        const ALLOWED_SETTINGS = ['dndEnabled', 'dndStart', 'dndEnd', 'nightlightEnabled', 'nightlightStart', 'nightlightEnd', 'nightlightBrightness', 'userName', 'fontSize', 'language', 'clockFormat', 'autoAnswer', 'ringVolume', 'callVolume', 'readVolume', 'autoRead', 'readDelay', 'quietEnabled', 'quietStart', 'quietEnd', 'urgentRing', 'urgentAnswer', 'clearPasscode'];
         if (body.setting && !ALLOWED_SETTINGS.includes(body.setting)) {
           return json({ error: 'Setting not allowed: ' + body.setting }, 400);
         }
@@ -1815,49 +1815,7 @@ export default {
       });
     }
 
-    // ===== REMINDERS =====
-    if (request.method === 'POST' && path.match(/^\/api\/reminders\/[\w-]+$/)) {
-      const deviceId = path.split('/')[3];
-      try {
-        const body = await request.json();
-        const { text, time, repeat } = body;
-        if (!text || !time) return json({ error: 'text and time required' }, 400);
-        const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
-        reminders.push({
-          id: crypto.randomUUID(),
-          text: text.trim(),
-          time, // HH:MM format
-          repeat: repeat || 'daily', // 'daily' or 'once'
-          createdAt: new Date().toISOString(),
-          active: true
-        });
-        await env.KEN_KV.put(`reminders:${deviceId}`, JSON.stringify(reminders));
-        const session = await getSession(request, env);
-        await logAudit(env, deviceId, session ? session.email : 'device', 'Added reminder', { text: text.trim(), time });
-        return json({ success: true });
-      } catch {
-        return json({ error: 'Invalid request' }, 400);
-      }
-    }
-
-    if (request.method === 'GET' && path.match(/^\/api\/reminders\/[\w-]+$/)) {
-      const deviceId = path.split('/')[3];
-      const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
-      return json({ reminders });
-    }
-
-    if (request.method === 'DELETE' && path.match(/^\/api\/reminders\/[\w-]+\/[\w-]+$/)) {
-      const parts = path.split('/');
-      const deviceId = parts[3];
-      const reminderId = parts[4];
-      const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
-      const deleted = reminders.find(r => r.id === reminderId);
-      const filtered = reminders.filter(r => r.id !== reminderId);
-      await env.KEN_KV.put(`reminders:${deviceId}`, JSON.stringify(filtered));
-      const session = await getSession(request, env);
-      await logAudit(env, deviceId, session ? session.email : 'device', 'Deleted reminder', { reminderId, text: deleted ? deleted.text : 'unknown' });
-      return json({ success: true });
-    }
+    // (Duplicate reminder endpoints removed — handled by REMOTE MEDICATION REMINDERS section above)
 
     // ===== PHOTOS =====
     if (request.method === 'POST' && path.match(/^\/api\/photos\/[\w-]+$/)) {
@@ -2645,6 +2603,65 @@ export default {
       });
     }
 
+    // ===== DEVICE DECOMMISSION (delete cascade) =====
+    if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+\/decommission$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (userRole !== 'admin' && userRole !== 'hq') return json({ error: 'Admin or HQ access required' }, 403);
+      try {
+        const body = await request.json();
+        if (!body.confirm) return json({ error: 'Set confirm: true to decommission' }, 400);
+        // Delete all device-related KV data
+        const keysToDelete = [
+          `device:${deviceId}`, `device-key:${deviceId}`, `heartbeat:${deviceId}`, `heartbeat-time:${deviceId}`,
+          `messages:${deviceId}`, `history:${deviceId}`, `contactlist:${deviceId}`, `pending:${deviceId}`,
+          `medical:${deviceId}`, `patient:${deviceId}`, `settings:${deviceId}`, `queue:${deviceId}`,
+          `reminders:${deviceId}`, `photos:${deviceId}`, `voicemails:${deviceId}`, `callhistory:${deviceId}`,
+          `feedback:${deviceId}`, `audit:${deviceId}`, `room:${deviceId}`, `groups:${deviceId}`,
+          `offline-alerts:${deviceId}`, `read-receipts:${deviceId}`, `birthday-prefs:${deviceId}`,
+          `scheduled-msgs:${deviceId}`, `med-alerts:${deviceId}`,
+          `screen:active:${deviceId}`, `screen:frame:${deviceId}`,
+        ];
+        for (const key of keysToDelete) {
+          await env.KEN_KV.delete(key);
+        }
+        // Remove from devices:all list
+        const devices = await env.KEN_KV.get('devices:all', 'json') || [];
+        const filtered = devices.filter(d => d !== deviceId);
+        await env.KEN_KV.put('devices:all', JSON.stringify(filtered));
+        // Remove device from all users
+        const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+        for (const key of allUsers.keys) {
+          try {
+            const u = await env.KEN_KV.get(key.name, 'json');
+            if (u && u.devices && u.devices[deviceId]) {
+              delete u.devices[deviceId];
+              await env.KEN_KV.put(key.name, JSON.stringify(u));
+            }
+          } catch {}
+        }
+        await logAudit(env, deviceId, auth.user.email, 'Device decommissioned', { keysDeleted: keysToDelete.length });
+        return json({ success: true, keysDeleted: keysToDelete.length });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== REMOTE PIN RESET (admin clears device passcode) =====
+    if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+\/reset-pin$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (userRole !== 'admin' && userRole !== 'hq') return json({ error: 'Admin or HQ access required' }, 403);
+      // Queue a settings change to clear the passcode on next sync
+      const queue = await env.KEN_KV.get(`queue:${deviceId}`, 'json') || [];
+      queue.push({ id: crypto.randomUUID(), setting: 'clearPasscode', value: true, queuedAt: new Date().toISOString() });
+      await env.KEN_KV.put(`queue:${deviceId}`, JSON.stringify(queue));
+      await logAudit(env, deviceId, auth.user.email, 'Remote PIN reset initiated', {});
+      return json({ success: true });
+    }
+
     // ===== CARER CHECK-IN SCHEDULES =====
     if (request.method === 'POST' && path.match(/^\/api\/carer\/check-ins\/[\w-]+$/)) {
       const deviceId = path.split('/')[4];
@@ -3011,7 +3028,7 @@ export default {
 async function handleAddContact(request, env, deviceId) {
   try {
     const body = await request.json();
-    const { name, relationship, phoneNumber, photo } = body;
+    const { name, relationship, phoneNumber, photo, birthday } = body;
     if (!name || !name.trim()) {
       return json({ error: 'Name is required' }, 400);
     }
@@ -3021,6 +3038,7 @@ async function handleAddContact(request, env, deviceId) {
       name: sanitize(name),
       relationship: sanitize(relationship || ''),
       phoneNumber: sanitize(phoneNumber || ''),
+      birthday: sanitize(birthday || ''),
       photo: photo || '',
       submittedAt: new Date().toISOString(),
     };

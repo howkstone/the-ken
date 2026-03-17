@@ -157,6 +157,9 @@
     <label for="phoneInput">Phone Number</label>
     <input type="tel" id="phoneInput" placeholder="e.g. +44 7700 900001" autocomplete="tel" />
 
+    <label for="birthdayInput">Birthday</label>
+    <input type="date" id="birthdayInput" style="width:100%;padding:16px;font-family:'Jost',sans-serif;font-size:18px;border:2px solid rgba(196,169,98,0.3);border-radius:12px;background:#fff;color:#1A1714;outline:none;" />
+
     <div class="photo-area">
       <label style="margin:0;">Your Photo</label>
       <div class="photo-preview" id="photoPreview">No photo</div>
@@ -235,6 +238,7 @@
             name: name,
             relationship: document.getElementById('relInput').value.trim(),
             phoneNumber: document.getElementById('phoneInput').value.trim(),
+            birthday: document.getElementById('birthdayInput').value || '',
             photo: photoBase64 || ''
           })
         });
