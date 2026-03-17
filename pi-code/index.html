@@ -2402,12 +2402,19 @@
 
   <!-- ===== HOME SCREEN ===== -->
   <div class="container" id="homeScreen">
-    <div class="top-bar">
+    <div class="top-bar" style="padding:16px 0 8px;">
       <div class="time-display">
-        <div class="clock" id="clock">10:23</div>
+        <div class="clock" id="clock" style="font-size:64px;font-weight:600;letter-spacing:2px;">10:23</div>
       </div>
-      <div class="date" id="date">Friday 14 March</div>
+      <div id="dayOfWeek" style="font-family:'Jost',sans-serif;font-weight:600;font-size:28px;color:var(--ink);text-align:center;margin-top:4px;">Monday</div>
+      <div class="date" id="date" style="font-size:22px;font-weight:500;margin-top:2px;">17 March 2026</div>
     </div>
+    <!-- Missed call banner (shown until acknowledged) -->
+    <div id="missedCallBanner" style="display:none;background:rgba(196,169,98,0.15);border:3px solid var(--gold);border-radius:16px;padding:16px 20px;margin:0 20px 12px;cursor:pointer;" onclick="dismissMissedCall()">
+      <div style="font-family:'Jost',sans-serif;font-weight:600;font-size:24px;color:var(--gold);text-align:center;" id="missedCallText">Sarah called at 2:15 PM</div>
+      <div style="font-family:'Jost',sans-serif;font-weight:500;font-size:18px;color:var(--mid);text-align:center;margin-top:4px;">Tap to dismiss</div>
+    </div>
+
     <div class="call-section">
       <div class="prompt" id="homeGreeting" style="font-family:'Cormorant Garamond',serif;font-size:var(--header-lg);color:var(--ink);font-weight:400;margin-bottom:8px;"></div>
       <div class="phone-icon" style="width:100px;height:100px;margin-bottom:12px;">
@@ -3354,6 +3361,14 @@
     </div>
   </div>
 
+  <!-- ===== SEND CONFIRMATION OVERLAY ===== -->
+  <div id="sendConfirmOverlay" style="display:none;position:fixed;inset:0;background:rgba(26,23,20,0.5);z-index:9998;align-items:center;justify-content:center;">
+    <div style="background:var(--cream);border-radius:24px;padding:48px 32px;max-width:480px;width:90%;text-align:center;">
+      <div style="font-size:48px;margin-bottom:16px;">✓</div>
+      <div id="sendConfirmText" style="font-size:28px;font-weight:600;color:var(--gold);"></div>
+    </div>
+  </div>
+
   <!-- ===== CONFIRMATION POPUP (reusable for all delete actions) ===== -->
   <div id="confirmOverlay" style="display:none;position:fixed;inset:0;background:rgba(26,23,20,0.7);z-index:9999;align-items:center;justify-content:center;">
     <div style="background:var(--cream);border-radius:24px;padding:40px 32px;max-width:480px;width:90%;text-align:center;">
@@ -3741,7 +3756,9 @@
       }
       const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
       const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-      document.getElementById('date').textContent = `${days[now.getDay()]} ${now.getDate()} ${months[now.getMonth()]}`;
+      const dayOfWeekEl = document.getElementById('dayOfWeek');
+      if (dayOfWeekEl) dayOfWeekEl.textContent = days[now.getDay()];
+      document.getElementById('date').textContent = `${now.getDate()} ${months[now.getMonth()]} ${now.getFullYear()}`;
 
       // Update greeting
       const hour = now.getHours();
@@ -3779,7 +3796,7 @@
           data.contacts.sort((a,b) => a.position - b.position).slice(0,4).forEach(contact => {
             const tile = document.createElement('div');
             tile.className = 'contact-tile';
-            tile.onclick = () => callContact(contact);
+            tile.onclick = () => confirmCallContact(contact);
 
             const photoDiv = document.createElement('div');
             photoDiv.className = 'contact-photo';
@@ -3862,6 +3879,15 @@
     }
 
     // ===== VIDEO CALLING =====
+    function confirmCallContact(contact) {
+      showConfirmPopup(
+        'Call ' + contact.name + '?',
+        'Tap Call to start a video call.',
+        'Call',
+        function() { callContact(contact); }
+      );
+    }
+
     function callContact(contact) {
       if (!contact.dailyRoomUrl) return;
       currentContact = contact;
@@ -4442,10 +4468,35 @@
         incomingCountdownInterval = null;
       }
       stopRingtone();
+      // Record missed call for banner
+      if (incomingCallData && incomingCallData.from) {
+        showMissedCallBanner(incomingCallData.from);
+      }
       // Acknowledge to clear the signal
       fetch('http://localhost:3000/api/calls/ack', { method: 'POST' }).catch(() => {});
       incomingCallData = null;
       showScreen('home');
+    }
+
+    function showMissedCallBanner(callerName) {
+      const now = new Date();
+      const use12 = localStorage.getItem('ken-clock-format') === '12';
+      let hours = now.getHours();
+      const minutes = String(now.getMinutes()).padStart(2, '0');
+      let timeStr;
+      if (use12) {
+        const ampm = hours >= 12 ? 'PM' : 'AM';
+        hours = hours % 12 || 12;
+        timeStr = hours + ':' + minutes + ' ' + ampm;
+      } else {
+        timeStr = String(hours).padStart(2, '0') + ':' + minutes;
+      }
+      document.getElementById('missedCallText').textContent = callerName + ' called at ' + timeStr;
+      document.getElementById('missedCallBanner').style.display = 'block';
+    }
+
+    function dismissMissedCall() {
+      document.getElementById('missedCallBanner').style.display = 'none';
     }
 
     function sendToVoicemail() {
@@ -5279,13 +5330,38 @@
           });
         }
 
-        // Show confirmation
+        // Show confirmation — visual + audio
         document.getElementById('replyScreen').classList.remove('active');
         replyBuffer = '';
         notifMessage = null;
 
-        // Brief confirmation using TTS
-        const confirmMsg = replyRecipient === 'The Ken Team' ? 'Thank you for your feedback!' : 'Reply sent to ' + replyRecipient;
+        const confirmMsg = replyRecipient === 'The Ken Team' ? 'Thank you for your feedback!' : 'Message sent to ' + replyRecipient;
+
+        // Visual confirmation banner
+        showSendConfirmation(confirmMsg);
+
+        // Audio confirmation — gentle chime + TTS
+        try {
+          const actx = new (window.AudioContext || window.webkitAudioContext)();
+          const g = actx.createGain();
+          g.connect(actx.destination);
+          g.gain.setValueAtTime(0.15, actx.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.8);
+          const o = actx.createOscillator();
+          o.type = 'sine';
+          o.frequency.setValueAtTime(659, actx.currentTime); // E5
+          o.connect(g); o.start(); o.stop(actx.currentTime + 0.3);
+          const o2 = actx.createOscillator();
+          const g2 = actx.createGain();
+          g2.connect(actx.destination);
+          g2.gain.setValueAtTime(0.15, actx.currentTime + 0.15);
+          g2.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 1.0);
+          o2.type = 'sine';
+          o2.frequency.setValueAtTime(784, actx.currentTime + 0.15); // G5
+          o2.connect(g2); o2.start(actx.currentTime + 0.15); o2.stop(actx.currentTime + 0.5);
+        } catch {}
+
+        // TTS
         const utterance = new SpeechSynthesisUtterance(confirmMsg);
         utterance.lang = 'en-GB';
         utterance.rate = 0.9;
@@ -5296,6 +5372,14 @@
         document.getElementById('replyScreen').classList.remove('active');
         replyBuffer = '';
       }
+    }
+
+    // ===== SEND CONFIRMATION OVERLAY =====
+    function showSendConfirmation(message) {
+      const el = document.getElementById('sendConfirmOverlay');
+      document.getElementById('sendConfirmText').textContent = message;
+      el.style.display = 'flex';
+      setTimeout(function() { el.style.display = 'none'; }, 3000);
     }
 
     // ===== MESSAGE SETTINGS =====
