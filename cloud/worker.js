@@ -1072,6 +1072,23 @@ export default {
     }
 
     // Set POA on a user login profile (HQ only)
+    // ===== PROFILE EDIT =====
+    if (request.method === 'POST' && path === '/api/auth/profile') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      try {
+        const body = await request.json();
+        if (body.name !== undefined) auth.user.name = sanitize(body.name);
+        if (body.phone !== undefined) auth.user.phone = sanitize(body.phone);
+        if (body.photo !== undefined) {
+          if (body.photo && body.photo.length > MAX_PHOTO_BASE64 * 1.4) return json({ error: 'Photo too large' }, 400);
+          auth.user.photo = body.photo;
+        }
+        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
     if (request.method === 'POST' && path === '/api/auth/poa') {
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
@@ -1148,7 +1165,7 @@ export default {
       }
     }
 
-    // Care notes (carer edit only, others view)
+    // Care notes diary (append-only log — carers add entries, others view)
     if (request.method === 'POST' && path.match(/^\/api\/medical\/[\w-]+\/care-notes$/)) {
       const deviceId = path.split('/')[3];
       const auth = await requireAuth(request, env);
@@ -1157,13 +1174,25 @@ export default {
       if (!hasPermission(role, 'edit:care_notes')) return json({ error: 'Only carers can edit care notes' }, 403);
       try {
         const body = await request.json();
-        const existing = await env.KEN_KV.get(`medical:${deviceId}`, 'json') || { gp: {}, medications: [], allergies: [], conditions: [], careNotes: '' };
-        existing.careNotes = sanitize(body.careNotes || '');
+        const existing = await env.KEN_KV.get(`medical:${deviceId}`, 'json') || { gp: {}, medications: [], allergies: [], conditions: [], careNotes: '', careNotesLog: [] };
+        // Migrate legacy string careNotes to diary array
+        if (!existing.careNotesLog) existing.careNotesLog = [];
+        if (typeof existing.careNotes === 'string' && existing.careNotes.trim()) {
+          existing.careNotesLog.unshift({ text: existing.careNotes, author: existing.careNotesUpdatedBy || 'Unknown', timestamp: existing.careNotesUpdatedAt || new Date().toISOString() });
+        }
+        // Append new entry
+        const newNote = sanitize(body.careNotes || body.text || '');
+        if (newNote) {
+          existing.careNotesLog.unshift({ id: crypto.randomUUID(), text: newNote, author: auth.user.name || auth.user.email, authorEmail: auth.user.email, timestamp: new Date().toISOString() });
+          // Keep last 200 entries
+          if (existing.careNotesLog.length > 200) existing.careNotesLog = existing.careNotesLog.slice(0, 200);
+        }
+        existing.careNotes = newNote; // Keep latest for backward compat
         existing.careNotesUpdatedAt = new Date().toISOString();
         existing.careNotesUpdatedBy = auth.user.email;
         const encMedical = await encryptObject(env, existing, SENSITIVE_FIELDS);
         await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(encMedical));
-        await logAudit(env, deviceId, auth.user.email, 'Updated care notes', {});
+        await logAudit(env, deviceId, auth.user.email, 'Added care note', { preview: newNote.slice(0, 50) });
         return json({ success: true });
       } catch {
         return json({ error: 'Invalid request' }, 400);
@@ -1549,9 +1578,16 @@ export default {
         const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
         const reminder = {
           id: crypto.randomUUID(),
-          label: (body.label || '').trim(),
+          label: sanitize(body.label || body.medicationName || ''),
+          medicationName: sanitize(body.medicationName || body.label || ''),
+          dosage: sanitize(body.dosage || ''),
+          instructions: sanitize(body.instructions || ''),
+          photo: body.photo || '',
           time: body.time,
           days: body.days || ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+          frequency: body.frequency || 'daily',
+          startDate: body.startDate || null,
+          endDate: body.endDate || null,
           enabled: true,
           createdBy: auth.user.email,
           createdAt: new Date().toISOString(),

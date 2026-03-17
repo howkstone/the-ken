@@ -2394,10 +2394,11 @@
   </div>
 
   <!-- ===== PHOTO CAROUSEL SLIDESHOW ===== -->
-  <div class="slideshow-overlay" id="slideshowOverlay">
+  <div class="slideshow-overlay" id="slideshowOverlay" onclick="toggleSlideshowPause(event)">
     <div class="slideshow-image" id="slideshowImgA"></div>
     <div class="slideshow-image" id="slideshowImgB"></div>
     <div class="slideshow-caption" id="slideshowCaption"></div>
+    <div id="slideshowPauseIndicator" style="display:none;position:absolute;top:20px;right:20px;background:rgba(26,23,20,0.6);color:var(--cream);font-family:'Jost',sans-serif;font-weight:500;font-size:22px;padding:8px 20px;border-radius:12px;">Paused — tap to resume</div>
   </div>
 
   <!-- ===== HOME SCREEN ===== -->
@@ -3358,6 +3359,15 @@
     </div>
     <div class="call-controls">
       <button class="end-call-btn" onclick="endCall()">End Call</button>
+    </div>
+  </div>
+
+  <!-- ===== NIGHTLIGHT GREETING ===== -->
+  <div id="nightGreetingOverlay" style="display:none;position:fixed;inset:0;z-index:9997;align-items:center;justify-content:center;pointer-events:none;">
+    <div style="text-align:center;opacity:0;transition:opacity 0.8s ease;" id="nightGreetingContent">
+      <div style="font-family:'Cormorant Garamond',serif;font-size:42px;font-weight:400;color:var(--gold);" id="nightGreetingText">Good evening</div>
+      <div style="font-family:'Jost',sans-serif;font-size:64px;font-weight:600;color:var(--ink);margin-top:8px;" id="nightGreetingTime">22:30</div>
+      <div style="font-family:'Jost',sans-serif;font-size:24px;font-weight:500;color:var(--mid);margin-top:8px;" id="nightGreetingDate">Monday 17 March</div>
     </div>
   </div>
 
@@ -5753,11 +5763,42 @@
 
     // Track user interaction to reset idle timer
     let wasIdle = false;
+    let nightGreetingShowing = false;
+    function showNightGreeting() {
+      if (nightGreetingShowing) return;
+      nightGreetingShowing = true;
+      const now = new Date();
+      const hour = now.getHours();
+      const userName = localStorage.getItem('ken-user-name') || '';
+      let greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+      if (userName) greet += ', ' + userName;
+      document.getElementById('nightGreetingText').textContent = greet;
+      const use12 = localStorage.getItem('ken-clock-format') === '12';
+      let h = hour, m = String(now.getMinutes()).padStart(2, '0');
+      if (use12) { const ap = h >= 12 ? 'pm' : 'am'; h = h % 12 || 12; document.getElementById('nightGreetingTime').textContent = h + ':' + m + ' ' + ap; }
+      else { document.getElementById('nightGreetingTime').textContent = String(h).padStart(2, '0') + ':' + m; }
+      const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+      document.getElementById('nightGreetingDate').textContent = days[now.getDay()] + ' ' + now.getDate() + ' ' + months[now.getMonth()];
+      const overlay = document.getElementById('nightGreetingOverlay');
+      const content = document.getElementById('nightGreetingContent');
+      overlay.style.display = 'flex';
+      requestAnimationFrame(() => { content.style.opacity = '1'; });
+      setTimeout(() => {
+        content.style.opacity = '0';
+        setTimeout(() => { overlay.style.display = 'none'; nightGreetingShowing = false; }, 800);
+      }, 3000);
+    }
+
     function resetIdleTimer() {
       const wasIdleBefore = wasIdle;
       wasIdle = false;
       lastInteractionTime = Date.now();
-      if (slideshowActive) {
+      // Show greeting when tapping during nightlight mode
+      if (nightlightActive && wasIdleBefore) {
+        showNightGreeting();
+      }
+      if (slideshowActive && !slideshowPaused) {
         dismissSlideshow();
       }
       // When coming back from idle, check for voicemail notifications after 1 second
@@ -5836,13 +5877,37 @@
       caption.textContent = photo.caption || '';
     }
 
+    let slideshowPaused = false;
+
+    function toggleSlideshowPause(event) {
+      if (!slideshowActive) return;
+      event.stopPropagation(); // Don't trigger resetIdleTimer → dismissSlideshow
+      lastInteractionTime = Date.now(); // Keep idle timer fresh
+      if (slideshowPaused) {
+        // Resume
+        slideshowPaused = false;
+        document.getElementById('slideshowPauseIndicator').style.display = 'none';
+        slideshowInterval = setInterval(() => {
+          slideshowIndex = (slideshowIndex + 1) % slideshowPhotos.length;
+          showSlide(slideshowIndex);
+        }, SLIDE_INTERVAL);
+      } else {
+        // Pause
+        slideshowPaused = true;
+        if (slideshowInterval) { clearInterval(slideshowInterval); slideshowInterval = null; }
+        document.getElementById('slideshowPauseIndicator').style.display = 'block';
+      }
+    }
+
     function dismissSlideshow() {
       if (!slideshowActive) return;
       slideshowActive = false;
+      slideshowPaused = false;
       if (slideshowInterval) { clearInterval(slideshowInterval); slideshowInterval = null; }
       document.getElementById('slideshowOverlay').classList.remove('active');
       document.getElementById('slideshowImgA').classList.remove('visible');
       document.getElementById('slideshowImgB').classList.remove('visible');
+      document.getElementById('slideshowPauseIndicator').style.display = 'none';
     }
 
     // Photo reel is manual only — no idle auto-trigger (dementia users need to always see the phone)
@@ -5918,9 +5983,15 @@
       activeReminder = reminder;
       reminderSnoozeCount = 0;
 
-      const label = reminder.label || reminder.text || 'your medication';
-      document.getElementById('reminderNotifLabel').textContent = 'Time for your medication';
-      document.getElementById('reminderNotifText').textContent = label;
+      const medName = reminder.medicationName || reminder.label || reminder.text || 'your medication';
+      const dosage = reminder.dosage || '';
+      const instructions = reminder.instructions || '';
+      document.getElementById('reminderNotifLabel').textContent = 'Time for ' + medName;
+      let displayText = medName;
+      if (dosage) displayText += '\n' + dosage;
+      if (instructions) displayText += '\n' + instructions;
+      document.getElementById('reminderNotifText').textContent = displayText;
+      document.getElementById('reminderNotifText').style.whiteSpace = 'pre-line';
       document.getElementById('reminderNotifTime').textContent = reminder.time;
       document.getElementById('reminderSnoozeCount').style.display = 'none';
       document.getElementById('reminderConfirmMsg').style.display = 'none';
