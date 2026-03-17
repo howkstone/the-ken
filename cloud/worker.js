@@ -111,7 +111,7 @@ export default {
 
     // ===== DEVICE AUTHENTICATION MIDDLEWARE =====
     // All device-scoped endpoints require either a valid device API key or user session
-    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts)\/([a-f0-9-]+)/);
+    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts|export)\/([a-f0-9-]+)/);
     if (deviceScopeMatch) {
       const scopedDeviceId = deviceScopeMatch[1];
       // Public endpoints exempt from auth (QR code contact form, feedback, heartbeat)
@@ -2208,6 +2208,239 @@ export default {
       return json({ success: true });
     }
 
+    // ===== SCHEDULED MESSAGES =====
+    // Schedule a message for future delivery
+    if (request.method === 'POST' && path.match(/^\/api\/messages\/[\w-]+\/schedule$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'send:messages')) return json({ error: 'Insufficient permissions' }, 403);
+      try {
+        const body = await request.json();
+        const { from, text, scheduledFor } = body;
+        if (!from || !text || !scheduledFor) return json({ error: 'from, text, and scheduledFor required' }, 400);
+        if (new Date(scheduledFor).getTime() <= Date.now()) return json({ error: 'scheduledFor must be in the future' }, 400);
+        const scheduled = await env.KEN_KV.get(`scheduled-msgs:${deviceId}`, 'json') || [];
+        const item = {
+          id: crypto.randomUUID(),
+          from: sanitize(from),
+          fromEmail: auth.user.email,
+          text: sanitize(text),
+          scheduledFor,
+          status: 'scheduled',
+          createdAt: new Date().toISOString(),
+        };
+        scheduled.push(item);
+        await env.KEN_KV.put(`scheduled-msgs:${deviceId}`, JSON.stringify(scheduled));
+        await logAudit(env, deviceId, auth.user.email, 'Scheduled message', { scheduledFor, preview: text.slice(0, 50) });
+        return json({ success: true, id: item.id });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // List scheduled messages
+    if (request.method === 'GET' && path.match(/^\/api\/messages\/[\w-]+\/scheduled$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const scheduled = await env.KEN_KV.get(`scheduled-msgs:${deviceId}`, 'json') || [];
+      // Users see only their own; admin/hq see all
+      const userRole = getUserRole(auth.user, deviceId);
+      const filtered = ['admin', 'hq'].includes(userRole) ? scheduled : scheduled.filter(s => s.fromEmail === auth.user.email);
+      return json({ scheduled: filtered.filter(s => s.status === 'scheduled') });
+    }
+
+    // Cancel or send-now a scheduled message
+    if (request.method === 'POST' && path.match(/^\/api\/messages\/[\w-]+\/scheduled\/[\w-]+\/[\w-]+$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const schedId = parts[5];
+      const action = parts[6]; // 'cancel' or 'send-now'
+      if (!['cancel', 'send-now'].includes(action)) return json({ error: 'Action must be cancel or send-now' }, 400);
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const scheduled = await env.KEN_KV.get(`scheduled-msgs:${deviceId}`, 'json') || [];
+      const item = scheduled.find(s => s.id === schedId);
+      if (!item) return json({ error: 'Scheduled message not found' }, 404);
+      if (item.fromEmail !== auth.user.email) {
+        const userRole = getUserRole(auth.user, deviceId);
+        if (!['admin', 'hq'].includes(userRole)) return json({ error: 'Can only manage your own scheduled messages' }, 403);
+      }
+      if (action === 'cancel') {
+        item.status = 'cancelled';
+        await env.KEN_KV.put(`scheduled-msgs:${deviceId}`, JSON.stringify(scheduled));
+        await logAudit(env, deviceId, auth.user.email, 'Cancelled scheduled message', { schedId });
+      } else {
+        // send-now: deliver immediately
+        item.status = 'sent';
+        await env.KEN_KV.put(`scheduled-msgs:${deviceId}`, JSON.stringify(scheduled));
+        // Add to pending + history (same as handleSendMessage)
+        const message = {
+          id: crypto.randomUUID(), from: item.from, fromEmail: item.fromEmail, text: item.text,
+          sentAt: new Date().toISOString(), deliveredAt: null, readAt: null,
+          deletedBySender: false, deletedByRecipient: false, deletedForEveryone: false, emailNotificationSent: false,
+        };
+        const pending = await env.KEN_KV.get(`messages:${deviceId}`, 'json') || [];
+        pending.push(message);
+        await env.KEN_KV.put(`messages:${deviceId}`, JSON.stringify(pending));
+        const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+        history.push(message);
+        if (history.length > 100) history.splice(0, history.length - 100);
+        await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        await logAudit(env, deviceId, auth.user.email, 'Sent scheduled message now', { schedId });
+      }
+      return json({ success: true });
+    }
+
+    // ===== MESSAGE SEARCH =====
+    if (request.method === 'GET' && path.match(/^\/api\/messages\/[\w-]+\/search$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const url = new URL(request.url);
+      const query = (url.searchParams.get('q') || '').toLowerCase().trim();
+      const contact = url.searchParams.get('contact') || '';
+      const type = url.searchParams.get('type') || 'all'; // all, messages, calls
+      const fromDate = url.searchParams.get('from') || '';
+      const toDate = url.searchParams.get('to') || '';
+      if (!query && !contact) return json({ error: 'Search query (q) or contact filter required' }, 400);
+      const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+      let results = history.filter(m => !m.deletedForEveryone);
+      if (query) results = results.filter(m => (m.text || '').toLowerCase().includes(query) || (m.from || '').toLowerCase().includes(query));
+      if (contact) results = results.filter(m => m.from === contact || m.to === contact);
+      if (fromDate) results = results.filter(m => new Date(m.sentAt) >= new Date(fromDate));
+      if (toDate) results = results.filter(m => new Date(m.sentAt) <= new Date(toDate));
+      // Include call history if requested
+      let callResults = [];
+      if (type === 'all' || type === 'calls') {
+        const callData = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || {};
+        const calls = callData.calls || [];
+        if (contact) callResults = calls.filter(c => (c.contactName || '').toLowerCase() === contact.toLowerCase());
+        else if (query) callResults = calls.filter(c => (c.contactName || '').toLowerCase().includes(query));
+      }
+      if (type === 'calls') results = [];
+      if (type === 'messages') callResults = [];
+      return json({ messages: results.slice(-100), calls: callResults.slice(-50) });
+    }
+
+    // ===== DATA EXPORT (GDPR) =====
+    if (request.method === 'GET' && path.match(/^\/api\/export\/[\w-]+$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!['admin', 'hq'].includes(userRole)) return json({ error: 'Admin access required for data export' }, 403);
+      // Collect all device data
+      const [history, contacts, medical, settings, audit, reminders, voicemails, callHistoryData, deviceInfo, feedback] = await Promise.all([
+        env.KEN_KV.get(`history:${deviceId}`, 'json'),
+        env.KEN_KV.get(`contactlist:${deviceId}`, 'json'),
+        env.KEN_KV.get(`medical:${deviceId}`, 'json'),
+        env.KEN_KV.get(`settings:${deviceId}`, 'json'),
+        env.KEN_KV.get(`audit:${deviceId}`, 'json'),
+        env.KEN_KV.get(`reminders:${deviceId}`, 'json'),
+        env.KEN_KV.get(`voicemails:${deviceId}`, 'json'),
+        env.KEN_KV.get(`callhistory:${deviceId}`, 'json'),
+        env.KEN_KV.get(`device:${deviceId}`, 'json'),
+        env.KEN_KV.get(`feedback:${deviceId}`, 'json'),
+      ]);
+      const exportData = {
+        exportedAt: new Date().toISOString(),
+        exportedBy: auth.user.email,
+        deviceId,
+        deviceInfo: deviceInfo || {},
+        messages: (history || []).map(m => ({ id: m.id, from: m.from, text: m.text, sentAt: m.sentAt, deliveredAt: m.deliveredAt, readAt: m.readAt, isReply: m.isReply, reactions: m.reactions })),
+        contacts: contacts || [],
+        medical: medical || {},
+        settings: settings || {},
+        reminders: reminders || [],
+        voicemails: (voicemails || []).map(v => ({ id: v.id, from: v.from, type: v.type, duration: v.duration, timestamp: v.timestamp, played: v.played })),
+        callHistory: callHistoryData || {},
+        auditLog: audit || [],
+        feedback: (feedback || []).map(f => ({ id: f.id, from: f.from, text: f.text, category: f.category, status: f.status, timestamp: f.timestamp })),
+      };
+      await logAudit(env, deviceId, auth.user.email, 'Exported device data', {});
+      return new Response(JSON.stringify(exportData, null, 2), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="ken-export-' + deviceId.slice(0,8) + '.json"', ...getCorsHeaders(request) },
+      });
+    }
+
+    // ===== CARER CHECK-IN SCHEDULES =====
+    if (request.method === 'POST' && path.match(/^\/api\/carer\/check-ins\/[\w-]+$/)) {
+      const deviceId = path.split('/')[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const role = getUserRole(auth.user, deviceId);
+      if (role !== 'carer' && role !== 'admin') return json({ error: 'Carer or admin access required' }, 403);
+      try {
+        const body = await request.json();
+        const { frequency, preferredTime, type, notes } = body;
+        if (!frequency || !preferredTime || !type) return json({ error: 'frequency, preferredTime, and type required' }, 400);
+        const validFreqs = ['daily', 'weekly', 'biweekly', 'monthly'];
+        if (!validFreqs.includes(frequency)) return json({ error: 'frequency must be: ' + validFreqs.join(', ') }, 400);
+        const validTypes = ['visit', 'phone', 'video'];
+        if (!validTypes.includes(type)) return json({ error: 'type must be: ' + validTypes.join(', ') }, 400);
+        const checkIns = await env.KEN_KV.get(`check-ins:${deviceId}:${auth.user.email}`, 'json') || [];
+        const item = {
+          id: crypto.randomUUID(),
+          carerId: auth.user.email,
+          carerName: auth.user.name,
+          deviceId,
+          frequency,
+          preferredTime,
+          type,
+          notes: sanitize(notes || ''),
+          nextDue: calculateNextDue(frequency, preferredTime),
+          lastCompleted: null,
+          createdAt: new Date().toISOString(),
+        };
+        checkIns.push(item);
+        await env.KEN_KV.put(`check-ins:${deviceId}:${auth.user.email}`, JSON.stringify(checkIns));
+        await logAudit(env, deviceId, auth.user.email, 'Created check-in schedule', { frequency, type, time: preferredTime });
+        return json({ success: true, checkIn: item });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // List check-ins for this carer + device
+    if (request.method === 'GET' && path.match(/^\/api\/carer\/check-ins\/[\w-]+$/)) {
+      const deviceId = path.split('/')[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const checkIns = await env.KEN_KV.get(`check-ins:${deviceId}:${auth.user.email}`, 'json') || [];
+      return json({ checkIns });
+    }
+
+    // Mark check-in complete
+    if (request.method === 'POST' && path.match(/^\/api\/carer\/check-ins\/[\w-]+\/[\w-]+\/complete$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[4];
+      const checkInId = parts[5];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const checkIns = await env.KEN_KV.get(`check-ins:${deviceId}:${auth.user.email}`, 'json') || [];
+      const item = checkIns.find(c => c.id === checkInId);
+      if (!item) return json({ error: 'Check-in not found' }, 404);
+      item.lastCompleted = new Date().toISOString();
+      item.nextDue = calculateNextDue(item.frequency, item.preferredTime);
+      await env.KEN_KV.put(`check-ins:${deviceId}:${auth.user.email}`, JSON.stringify(checkIns));
+      await logAudit(env, deviceId, auth.user.email, 'Completed check-in', { checkInId, type: item.type });
+      return json({ success: true, nextDue: item.nextDue });
+    }
+
+    // Delete check-in schedule
+    if (request.method === 'DELETE' && path.match(/^\/api\/carer\/check-ins\/[\w-]+\/[\w-]+$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[4];
+      const checkInId = parts[5];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const checkIns = await env.KEN_KV.get(`check-ins:${deviceId}:${auth.user.email}`, 'json') || [];
+      const filtered = checkIns.filter(c => c.id !== checkInId);
+      await env.KEN_KV.put(`check-ins:${deviceId}:${auth.user.email}`, JSON.stringify(filtered));
+      await logAudit(env, deviceId, auth.user.email, 'Deleted check-in schedule', { checkInId });
+      return json({ success: true });
+    }
+
     return new Response('Not found', { status: 404 });
   },
 
@@ -2363,6 +2596,75 @@ export default {
         if (history.length > 0) await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
         if (voicemails.length > 0) await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
         if (calls.length > 0) await env.KEN_KV.put(`callhistory:${deviceId}`, JSON.stringify({ calls }));
+      } catch {}
+    }
+
+    // ===== SCHEDULED MESSAGE DELIVERY =====
+    for (const deviceId of devices) {
+      try {
+        const scheduled = await env.KEN_KV.get(`scheduled-msgs:${deviceId}`, 'json') || [];
+        let modified = false;
+        for (const item of scheduled) {
+          if (item.status !== 'scheduled') continue;
+          if (new Date(item.scheduledFor).getTime() > now) continue;
+          // Deliver this message
+          item.status = 'sent';
+          const message = {
+            id: crypto.randomUUID(), from: item.from, fromEmail: item.fromEmail, text: item.text,
+            sentAt: new Date().toISOString(), deliveredAt: null, readAt: null,
+            deletedBySender: false, deletedByRecipient: false, deletedForEveryone: false, emailNotificationSent: false,
+            wasScheduled: true,
+          };
+          const pending = await env.KEN_KV.get(`messages:${deviceId}`, 'json') || [];
+          pending.push(message);
+          await env.KEN_KV.put(`messages:${deviceId}`, JSON.stringify(pending));
+          const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+          history.push(message);
+          if (history.length > 100) history.splice(0, history.length - 100);
+          await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+          modified = true;
+        }
+        if (modified) await env.KEN_KV.put(`scheduled-msgs:${deviceId}`, JSON.stringify(scheduled));
+      } catch {}
+    }
+
+    // ===== CARER CHECK-IN REMINDERS =====
+    // Email carers 30 minutes before their scheduled check-ins
+    for (const deviceId of devices) {
+      try {
+        const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+        for (const key of allUsers.keys) {
+          try {
+            const u = await env.KEN_KV.get(key.name, 'json');
+            if (!u || !u.devices || !u.devices[deviceId]) continue;
+            const uRole = u.devices[deviceId].role;
+            if (uRole !== 'carer' && uRole !== 'admin') continue;
+            const checkIns = await env.KEN_KV.get(`check-ins:${deviceId}:${u.email}`, 'json') || [];
+            const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
+            const userName = deviceInfo.userName || 'The Ken user';
+            for (const ci of checkIns) {
+              if (!ci.nextDue) continue;
+              const dueTime = new Date(ci.nextDue).getTime();
+              const thirtyMinBefore = dueTime - 1800000;
+              // Send reminder if we're within the 30-min window and haven't sent one yet
+              if (now >= thirtyMinBefore && now < dueTime && !ci.reminderSent) {
+                ci.reminderSent = true;
+                await sendEmail(env, u.email,
+                  'Check-in reminder — ' + userName,
+                  'Upcoming check-in',
+                  '<p style="color:#6B6459;line-height:1.7;">You have a <strong>' + ci.type + '</strong> check-in with <strong>' + sanitize(userName) + '</strong> in 30 minutes.</p>' +
+                  (ci.notes ? '<p style="color:#6B6459;line-height:1.7;">Notes: ' + sanitize(ci.notes) + '</p>' : '') +
+                  '<a href="https://theken.uk/portal/" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Open Portal</a>'
+                );
+              }
+              // Reset reminder flag when due time passes (for next cycle)
+              if (now > dueTime && ci.reminderSent) {
+                ci.reminderSent = false;
+              }
+            }
+            await env.KEN_KV.put(`check-ins:${deviceId}:${u.email}`, JSON.stringify(checkIns));
+          } catch {}
+        }
       } catch {}
     }
   },
@@ -4565,6 +4867,22 @@ async function verifyTOTP(secret, code) {
     if (expected === code) return true;
   }
   return false;
+}
+
+function calculateNextDue(frequency, preferredTime) {
+  const now = new Date();
+  const [hours, minutes] = (preferredTime || '09:00').split(':').map(Number);
+  const next = new Date(now);
+  next.setHours(hours, minutes, 0, 0);
+  // If the time today has passed, start from tomorrow
+  if (next <= now) next.setDate(next.getDate() + 1);
+  switch (frequency) {
+    case 'daily': break; // already set to tomorrow or today
+    case 'weekly': while (next <= now) next.setDate(next.getDate() + 7); break;
+    case 'biweekly': while (next <= now) next.setDate(next.getDate() + 14); break;
+    case 'monthly': while (next <= now) next.setMonth(next.getMonth() + 1); break;
+  }
+  return next.toISOString();
 }
 
 async function logAudit(env, deviceId, email, action, details) {
