@@ -5049,9 +5049,7 @@
     async function deviceReact(emoji) {
       if (!currentMessage) return;
       try {
-        var deviceResp = await fetch('http://localhost:3000/api/device-id');
-        var deviceData = await deviceResp.json();
-        await fetch(deviceData.cloudUrl + '/api/messages/' + deviceData.deviceId + '/' + currentMessage.id + '/react', {
+        await fetch('http://localhost:3000/api/messages/' + currentMessage.id + '/react', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ emoji: emoji })
@@ -5902,10 +5900,9 @@
 
           // Notify cloud of snooze
           try {
-            const deviceData = await fetch('http://localhost:3000/api/device-id').then(r => r.json());
-            fetch(deviceData.cloudUrl + '/api/reminders/' + deviceData.deviceId + '/' + activeReminder.id + '/response', {
+            fetch('http://localhost:3000/api/reminders/' + activeReminder.id + '/response', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Ken-Device-Key': deviceData.deviceKey || '' },
+              headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ action: 'snoozed', snoozeCount: reminderSnoozeCount })
             }).catch(() => {});
           } catch {}
@@ -5929,10 +5926,9 @@
 
       // Notify cloud
       try {
-        const deviceData = await fetch('http://localhost:3000/api/device-id').then(r => r.json());
-        fetch(deviceData.cloudUrl + '/api/reminders/' + deviceData.deviceId + '/' + activeReminder.id + '/response', {
+        fetch('http://localhost:3000/api/reminders/' + activeReminder.id + '/response', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Ken-Device-Key': deviceData.deviceKey || '' },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action, snoozeCount: reminderSnoozeCount })
         }).catch(() => {});
       } catch {}

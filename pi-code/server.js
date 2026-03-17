@@ -14,7 +14,6 @@ function loadConfig() {
   catch { return {}; }
 }
 const config = loadConfig();
-const DAILY_API_KEY = config.dailyApiKey || 'e1cd1b212795aeb0696ab6aa7693150bae1e0f7ced7e8160cc56873d76070957';
 const CLOUD_API = config.cloudApi || 'https://ken-api.the-ken.workers.dev';
 const DEVICE_KEY_FILE = path.join(__dirname, '.device-key');
 let DEVICE_API_KEY = '';
@@ -192,13 +191,12 @@ function writeMessages(data) {
 async function createDailyRoom(name) {
   const roomName = name.toLowerCase().replace(/[^a-z0-9]/g, '');
   try {
-    const resp = await fetch('https://api.daily.co/v1/rooms', {
+    const resp = await cloudFetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/create-room`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DAILY_API_KEY },
-      body: JSON.stringify({ name: roomName, privacy: 'public' })
+      body: JSON.stringify({ roomName })
     });
     const data = await resp.json();
-    return data.url || 'https://theken.daily.co/' + roomName;
+    return data.roomUrl || 'https://theken.daily.co/' + roomName;
   } catch {
     return 'https://theken.daily.co/' + roomName;
   }
@@ -302,22 +300,13 @@ let deviceRoomUrl = '';
 async function ensureDeviceRoom() {
   const roomName = 'ken-' + DEVICE_ID.substring(0, 8);
   try {
-    const resp = await fetch('https://api.daily.co/v1/rooms/' + roomName, {
-      headers: { 'Authorization': 'Bearer ' + DAILY_API_KEY }
+    // Create room via Worker (holds the Daily API key securely)
+    const resp = await cloudFetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/create-room`, {
+      method: 'POST',
+      body: JSON.stringify({ roomName })
     });
-    if (resp.ok) {
-      const data = await resp.json();
-      deviceRoomUrl = data.url;
-    } else {
-      // Create the room
-      const createResp = await fetch('https://api.daily.co/v1/rooms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DAILY_API_KEY },
-        body: JSON.stringify({ name: roomName, privacy: 'public' })
-      });
-      const data = await createResp.json();
-      deviceRoomUrl = data.url || 'https://theken.daily.co/' + roomName;
-    }
+    const data = await resp.json();
+    deviceRoomUrl = data.roomUrl || 'https://theken.daily.co/' + roomName;
     console.log('Device room URL:', deviceRoomUrl);
     // Register with cloud
     await cloudFetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/room`, {
@@ -619,7 +608,11 @@ ensureDeviceRoom();
 syncContactsToCloud();
 
 const server = http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Restrict CORS to Electron app only (file:// sends 'null' origin)
+  const origin = req.headers.origin || '';
+  if (origin === 'null' || origin.startsWith('file://') || origin === 'http://localhost:3000') {
+    res.setHeader('Access-Control-Allow-Origin', origin || 'null');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -628,7 +621,7 @@ const server = http.createServer(async (req, res) => {
   // Return device ID
   if (req.method === 'GET' && req.url === '/api/device-id') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ deviceId: DEVICE_ID, cloudUrl: CLOUD_API, deviceKey: DEVICE_API_KEY }));
+    res.end(JSON.stringify({ deviceId: DEVICE_ID, cloudUrl: CLOUD_API }));
     return;
   }
 
@@ -894,6 +887,46 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Proxy: medication reminder response (frontend → cloud via server, no key exposed)
+  if (req.method === 'POST' && req.url.match(/^\/api\/reminders\/[\w-]+\/response$/)) {
+    const reminderId = req.url.split('/')[3];
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        await cloudFetch(`${CLOUD_API}/api/reminders/${DEVICE_ID}/${reminderId}/response`, {
+          method: 'POST', body
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
+  // Proxy: emoji reaction (frontend → cloud via server, no key exposed)
+  if (req.method === 'POST' && req.url.match(/^\/api\/messages\/[\w-]+\/react$/)) {
+    const msgId = req.url.split('/')[3];
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        await cloudFetch(`${CLOUD_API}/api/messages/${DEVICE_ID}/${msgId}/react`, {
+          method: 'POST', body
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false }));
+      }
+    });
+    return;
+  }
+
   // Get medical info (proxy to cloud, with local cache)
   if (req.method === 'GET' && req.url === '/api/medical') {
     try {
@@ -1117,15 +1150,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // WiFi connect
+  // WiFi connect (uses execFile with args array to prevent shell injection)
   if (req.method === 'POST' && req.url === '/api/wifi/connect') {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
-      const { execSync } = require('child_process');
+      const { execFileSync } = require('child_process');
       try {
         const { ssid, password } = JSON.parse(body);
-        execSync(`nmcli dev wifi connect "${ssid}" password "${password}" 2>&1`, { encoding: 'utf8', timeout: 15000 });
+        if (!ssid || typeof ssid !== 'string') throw new Error('SSID required');
+        if (!password || typeof password !== 'string') throw new Error('Password required');
+        execFileSync('nmcli', ['dev', 'wifi', 'connect', ssid, 'password', password], { encoding: 'utf8', timeout: 15000 });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true }));
       } catch (err) {

@@ -825,6 +825,38 @@ export default {
     }
 
     // ===== CALL ENDPOINTS =====
+    // Create a Daily.co room (Pi calls this instead of holding the API key)
+    if (request.method === 'POST' && path.match(/^\/api\/calls\/[\w-]+\/create-room$/)) {
+      const deviceId = path.split('/')[3];
+      if (!env.DAILY_API_KEY) return json({ error: 'Daily API key not configured' }, 500);
+      try {
+        const body = await request.json();
+        const roomName = sanitize(body.roomName || ('ken-' + deviceId.slice(0, 8)));
+        // Create or get existing room
+        const dailyResp = await fetch('https://api.daily.co/v1/rooms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env.DAILY_API_KEY },
+          body: JSON.stringify({
+            name: roomName,
+            privacy: 'public',
+            properties: { max_participants: 10, enable_chat: false, exp: Math.floor(Date.now() / 1000) + 86400 }
+          })
+        });
+        if (dailyResp.status === 400) {
+          // Room likely already exists, return it
+          const roomUrl = 'https://theken.daily.co/' + roomName;
+          await env.KEN_KV.put(`room:${deviceId}`, roomUrl);
+          return json({ success: true, roomUrl });
+        }
+        const room = await dailyResp.json();
+        const roomUrl = room.url || ('https://theken.daily.co/' + roomName);
+        await env.KEN_KV.put(`room:${deviceId}`, roomUrl);
+        return json({ success: true, roomUrl });
+      } catch (e) {
+        return json({ error: 'Could not create room' }, 500);
+      }
+    }
+
     // Pi registers its Daily room URL
     if (request.method === 'POST' && path.match(/^\/api\/calls\/[\w-]+\/room$/)) {
       const deviceId = path.split('/')[3];
