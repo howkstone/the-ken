@@ -1330,14 +1330,62 @@ export default {
       for (const did of allDevices) {
         const info = await env.KEN_KV.get(`device:${did}`, 'json') || {};
         const heartbeat = await env.KEN_KV.get(`heartbeat:${did}`, 'json');
+        const online = heartbeat ? (Date.now() - new Date(heartbeat.lastSeen || heartbeat.timestamp).getTime() < 360000) : false;
+        // Fetch alert counts for traffic light status
+        const medAlerts = await env.KEN_KV.get(`med-alerts:${did}`, 'json') || [];
+        const unresolvedAlerts = medAlerts.filter(a => !a.resolved).length;
+        const history = await env.KEN_KV.get(`history:${did}`, 'json') || [];
+        const unreadMessages = history.filter(m => m.isReply && !m.readAt && !m.deletedForEveryone).length;
+        // Determine status: green (ok), amber (offline or minor), gold (needs attention)
+        let status = 'green';
+        if (!online) status = 'amber';
+        if (unresolvedAlerts > 0) status = 'gold';
         devices.push({
-          deviceId: did,
-          userName: info.userName || 'Unknown',
-          lastActive: heartbeat ? heartbeat.timestamp : null,
-          online: heartbeat ? (Date.now() - new Date(heartbeat.timestamp).getTime() < 360000) : false,
+          deviceId: did, userName: info.userName || 'Unknown',
+          lastActive: heartbeat ? (heartbeat.lastSeen || heartbeat.timestamp) : null,
+          online, status, unresolvedAlerts, unreadMessages,
         });
       }
-      return json({ devices });
+      const totalOnline = devices.filter(d => d.online).length;
+      const totalAlerts = devices.reduce((sum, d) => sum + d.unresolvedAlerts, 0);
+      return json({ devices, summary: { total: devices.length, online: totalOnline, alerts: totalAlerts } });
+    }
+
+    // HQ broadcast message to all devices
+    if (request.method === 'POST' && path === '/api/hq/broadcast') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'hq') return json({ error: 'HQ role required' }, 403);
+      try {
+        const body = await request.json();
+        const { text } = body;
+        if (!text || !text.trim()) return json({ error: 'Message text required' }, 400);
+        const allDevices = await env.KEN_KV.get('devices:all', 'json') || [];
+        let sent = 0;
+        for (const did of allDevices) {
+          const message = {
+            id: crypto.randomUUID(),
+            from: auth.user.name || 'The Ken HQ',
+            fromEmail: auth.user.email,
+            text: sanitize(text),
+            sentAt: new Date().toISOString(),
+            deliveredAt: null, readAt: null,
+            isSystemBroadcast: true,
+            deletedBySender: false, deletedByRecipient: false, deletedForEveryone: false,
+            emailNotificationSent: false,
+          };
+          const pending = await env.KEN_KV.get(`messages:${did}`, 'json') || [];
+          pending.push(message);
+          await env.KEN_KV.put(`messages:${did}`, JSON.stringify(pending));
+          const history = await env.KEN_KV.get(`history:${did}`, 'json') || [];
+          history.push(message);
+          if (history.length > 100) history.splice(0, history.length - 100);
+          await env.KEN_KV.put(`history:${did}`, JSON.stringify(history));
+          sent++;
+        }
+        await logAudit(env, allDevices[0] || 'system', auth.user.email, 'HQ broadcast sent', { text: text.slice(0, 50), deviceCount: sent });
+        return json({ success: true, deviceCount: sent });
+      } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
     // HQ request access to private content
