@@ -544,8 +544,137 @@ export default {
 
     if (request.method === 'POST' && path.match(/^\/api\/messages\/[\w-]+\/ack$/)) {
       const deviceId = path.split('/')[3];
+      // When Pi acks pending messages, mark them as delivered in history
+      const pending = await env.KEN_KV.get(`messages:${deviceId}`, 'json') || [];
+      if (pending.length > 0) {
+        const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+        const now = new Date().toISOString();
+        const pendingIds = pending.map(p => p.id);
+        let updated = 0;
+        for (const msg of history) {
+          if (pendingIds.includes(msg.id) && !msg.deliveredAt) {
+            msg.deliveredAt = now;
+            updated++;
+          }
+        }
+        if (updated > 0) await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+      }
       await env.KEN_KV.delete(`messages:${deviceId}`);
       return json({ success: true });
+    }
+
+    // ===== MESSAGE STATUS: DELIVERED (Pi calls when it downloads messages) =====
+    if (request.method === 'POST' && path.match(/^\/api\/messages\/[\w-]+\/delivered$/)) {
+      const deviceId = path.split('/')[3];
+      try {
+        const body = await request.json();
+        const { messageIds } = body; // Array of message IDs that were delivered
+        if (!messageIds || !Array.isArray(messageIds)) return json({ error: 'messageIds array required' }, 400);
+        const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+        const now = new Date().toISOString();
+        let updated = 0;
+        for (const msg of history) {
+          if (messageIds.includes(msg.id) && !msg.deliveredAt) {
+            msg.deliveredAt = now;
+            updated++;
+          }
+        }
+        if (updated > 0) await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        return json({ success: true, updated });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== MESSAGE STATUS: READ (Pi calls when User views a message) =====
+    if (request.method === 'POST' && path.match(/^\/api\/messages\/[\w-]+\/read$/)) {
+      const deviceId = path.split('/')[3];
+      try {
+        const body = await request.json();
+        const { messageId } = body;
+        if (!messageId) return json({ error: 'messageId required' }, 400);
+        // Check if read receipts are enabled for this device
+        const readReceiptsPref = await env.KEN_KV.get(`read-receipts:${deviceId}`, 'json');
+        if (readReceiptsPref && readReceiptsPref.enabled === false) {
+          return json({ success: true, suppressed: true });
+        }
+        const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+        const msg = history.find(m => m.id === messageId);
+        if (msg && !msg.readAt) {
+          msg.readAt = new Date().toISOString();
+          await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        }
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== READ RECEIPTS TOGGLE (Admin/Carer only) =====
+    if (request.method === 'POST' && path.match(/^\/api\/settings\/[\w-]+\/read-receipts$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'edit:settings')) return json({ error: 'Insufficient permissions' }, 403);
+      try {
+        const body = await request.json();
+        await env.KEN_KV.put(`read-receipts:${deviceId}`, JSON.stringify({ enabled: body.enabled !== false }));
+        await logAudit(env, deviceId, auth.user.email, 'Updated read receipts setting', { enabled: body.enabled !== false });
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    if (request.method === 'GET' && path.match(/^\/api\/settings\/[\w-]+\/read-receipts$/)) {
+      const deviceId = path.split('/')[3];
+      const pref = await env.KEN_KV.get(`read-receipts:${deviceId}`, 'json');
+      return json(pref || { enabled: true });
+    }
+
+    // ===== MESSAGE DELETE (for-me / for-everyone) =====
+    if (request.method === 'POST' && path.match(/^\/api\/messages\/[\w-]+\/[\w-]+\/delete$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const messageId = parts[4];
+      try {
+        const body = await request.json();
+        const { mode } = body; // 'for-me' or 'for-everyone'
+        if (!mode || !['for-me', 'for-everyone'].includes(mode)) {
+          return json({ error: 'mode must be for-me or for-everyone' }, 400);
+        }
+        const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+        const msg = history.find(m => m.id === messageId);
+        if (!msg) return json({ error: 'Message not found' }, 404);
+
+        // Determine who is deleting
+        const deviceKey = request.headers.get('X-Ken-Device-Key');
+        const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+        const isDevice = deviceKey && storedKey && deviceKey === storedKey;
+        const session = await getSession(request, env);
+
+        if (mode === 'for-everyone') {
+          // Admin only
+          if (!session) return json({ error: 'Authentication required' }, 401);
+          const user = await env.KEN_KV.get(`user:${session.email}`, 'json');
+          if (!user) return json({ error: 'User not found' }, 401);
+          const role = getUserRole(user, deviceId);
+          if (role !== 'admin' && role !== 'hq') return json({ error: 'Admin access required for delete-for-everyone' }, 403);
+          msg.deletedForEveryone = true;
+          msg.deletedForEveryoneBy = session.email;
+          msg.deletedForEveryoneAt = new Date().toISOString();
+          await logAudit(env, deviceId, session.email, 'Deleted message for everyone', { messageId, preview: (msg.text || '').slice(0, 50) });
+        } else {
+          // for-me
+          if (isDevice) {
+            msg.deletedByRecipient = true;
+            msg.deletedByRecipientAt = new Date().toISOString();
+          } else if (session) {
+            msg.deletedBySender = true;
+            msg.deletedBySenderAt = new Date().toISOString();
+            await logAudit(env, deviceId, session.email, 'Deleted message for self', { messageId });
+          } else {
+            return json({ error: 'Authentication required' }, 401);
+          }
+        }
+        await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
     // ===== REPLY (from device — goes to history only, not pending) =====
@@ -562,8 +691,14 @@ export default {
           from: sanitize(from),
           text: sanitize(text),
           sentAt: new Date().toISOString(),
+          deliveredAt: new Date().toISOString(), // Replies from device are already on the device
+          readAt: null,
           isReply: true,
           to: sanitize(to || '') || undefined,
+          deletedBySender: false,
+          deletedByRecipient: false,
+          deletedForEveryone: false,
+          emailNotificationSent: false,
         };
         const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
         history.push(message);
@@ -579,7 +714,20 @@ export default {
     if (request.method === 'GET' && path.match(/^\/api\/messages\/[\w-]+\/history$/)) {
       const deviceId = path.split('/')[3];
       const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
-      return json({ messages: history });
+      // Filter deleted messages based on viewer
+      const deviceKey = request.headers.get('X-Ken-Device-Key');
+      const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      const isDevice = deviceKey && storedKey && deviceKey === storedKey;
+      const session = await getSession(request, env);
+      const filtered = history.filter(m => {
+        if (m.deletedForEveryone) return false;
+        if (isDevice && m.deletedByRecipient) return false;
+        if (session && m.deletedBySender && m.fromEmail === session.email) return false;
+        return true;
+      });
+      // Include read receipt setting so portal knows whether to show third tick
+      const readReceiptsPref = await env.KEN_KV.get(`read-receipts:${deviceId}`, 'json');
+      return json({ messages: filtered, readReceiptsEnabled: readReceiptsPref ? readReceiptsPref.enabled : true });
     }
 
     // ===== DELETE MESSAGE (from history) =====
@@ -1995,12 +2143,21 @@ async function handleSendMessage(request, env, deviceId) {
     if (!from || !text || !text.trim()) {
       return json({ error: 'From and text are required' }, 400);
     }
+    // Attach sender email if authenticated
+    const session = await getSession(request, env);
+    const senderEmail = session ? session.email : null;
     const message = {
       id: crypto.randomUUID(),
       from: sanitize(from),
+      fromEmail: senderEmail,
       text: sanitize(text),
       sentAt: new Date().toISOString(),
-      read: false,
+      deliveredAt: null,
+      readAt: null,
+      deletedBySender: false,
+      deletedByRecipient: false,
+      deletedForEveryone: false,
+      emailNotificationSent: false,
     };
 
     // Add to pending (Pi will poll this)

@@ -864,21 +864,31 @@ const server = http.createServer(async (req, res) => {
       logToAudit('Viewed message', { from: msg.from, messageId: msgId });
       msg.read = true;
       writeMessages(store);
+      // Notify cloud so portal shows ✓✓✓ Read (fire-and-forget)
+      cloudFetch(`${CLOUD_API}/api/messages/${DEVICE_ID}/read`, {
+        method: 'POST',
+        headers: deviceHeaders(),
+        body: JSON.stringify({ messageId: msgId })
+      }).catch(() => {});
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
     return;
   }
 
-  // Delete message (locally + from cloud history)
+  // Delete message (locally + mark as deleted-by-recipient in cloud)
   if (req.method === 'DELETE' && req.url.match(/^\/api\/messages\/[\w-]+$/)) {
     const msgId = req.url.split('/')[3];
     const store = readMessages();
     const before = store.messages.length;
     store.messages = store.messages.filter(m => m.id !== msgId);
     if (store.messages.length < before) writeMessages(store);
-    // Also delete from cloud history
-    cloudFetch(`${CLOUD_API}/api/messages/${DEVICE_ID}/${msgId}`, { method: 'DELETE' }).catch(() => {});
+    // Mark as deleted-by-recipient in cloud (sender can still see it)
+    cloudFetch(`${CLOUD_API}/api/messages/${DEVICE_ID}/${msgId}/delete`, {
+      method: 'POST',
+      headers: deviceHeaders(),
+      body: JSON.stringify({ mode: 'for-me' })
+    }).catch(() => {});
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true }));
     return;

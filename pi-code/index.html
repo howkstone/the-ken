@@ -2839,7 +2839,7 @@
     <div class="msg-view-actions">
       <button class="read-aloud-btn" onclick="readMessageAloud()">Read Aloud</button>
       <button class="read-aloud-btn" onclick="replyFromView()" style="background:rgba(196,169,98,0.15);color:var(--gold);border:3px solid var(--gold);">Reply</button>
-      <button class="read-aloud-btn" onclick="deleteCurrentMessage()" style="background:rgba(100,100,100,0.1);color:var(--mid);border:3px solid var(--mid);">Delete</button>
+      <button class="read-aloud-btn" onclick="showDeleteConfirm()" style="background:rgba(100,100,100,0.1);color:var(--mid);border:3px solid var(--mid);">Delete</button>
     </div>
   </div>
 
@@ -3337,6 +3337,18 @@
     </div>
     <div class="call-controls">
       <button class="end-call-btn" onclick="endCall()">End Call</button>
+    </div>
+  </div>
+
+  <!-- ===== CONFIRMATION POPUP (reusable for all delete actions) ===== -->
+  <div id="confirmOverlay" style="display:none;position:fixed;inset:0;background:rgba(26,23,20,0.7);z-index:9999;align-items:center;justify-content:center;">
+    <div style="background:var(--cream);border-radius:24px;padding:40px 32px;max-width:480px;width:90%;text-align:center;">
+      <div id="confirmTitle" style="font-size:32px;font-weight:600;color:var(--ink);margin-bottom:16px;">Delete message?</div>
+      <div id="confirmText" style="font-size:24px;color:var(--mid);margin-bottom:32px;">This will remove the message from your device.</div>
+      <div style="display:flex;gap:16px;">
+        <button onclick="closeConfirmPopup()" style="flex:1;min-height:80px;font-size:28px;font-weight:500;font-family:'Jost',sans-serif;color:var(--mid);background:var(--warm);border:3px solid var(--mid);border-radius:16px;cursor:pointer;">Cancel</button>
+        <button id="confirmBtn" onclick="execConfirmAction()" style="flex:1;min-height:80px;font-size:28px;font-weight:500;font-family:'Jost',sans-serif;color:var(--cream);background:var(--gold);border:none;border-radius:16px;cursor:pointer;">Delete</button>
+      </div>
     </div>
   </div>
 
@@ -4927,18 +4939,50 @@
       } catch {}
     }
 
-    async function deleteCurrentMessage() {
+    // Confirmation popup system
+    let pendingConfirmAction = null;
+
+    function showConfirmPopup(title, text, btnLabel, action) {
+      document.getElementById('confirmTitle').textContent = title;
+      document.getElementById('confirmText').textContent = text;
+      document.getElementById('confirmBtn').textContent = btnLabel || 'Delete';
+      pendingConfirmAction = action;
+      const overlay = document.getElementById('confirmOverlay');
+      overlay.style.display = 'flex';
+    }
+
+    function closeConfirmPopup() {
+      document.getElementById('confirmOverlay').style.display = 'none';
+      pendingConfirmAction = null;
+    }
+
+    function execConfirmAction() {
+      if (pendingConfirmAction) pendingConfirmAction();
+      closeConfirmPopup();
+    }
+
+    function showDeleteConfirm() {
       if (!currentMessage) return;
-      await fetch('http://localhost:3000/api/messages/' + currentMessage.id, { method: 'DELETE' });
-      currentMessage = null;
-      // Reload messages data then go back to thread
-      await loadMessages();
-      if (currentThreadContact) {
-        openThread(currentThreadContact);
-      } else {
-        showScreen('messages');
-      }
-      updateMessageBadge();
+      showConfirmPopup(
+        'Delete message?',
+        'This will remove the message from your device.',
+        'Delete',
+        async function() {
+          await fetch('http://localhost:3000/api/messages/' + currentMessage.id, { method: 'DELETE' });
+          currentMessage = null;
+          await loadMessages();
+          if (currentThreadContact) {
+            openThread(currentThreadContact);
+          } else {
+            showScreen('messages');
+          }
+          updateMessageBadge();
+        }
+      );
+    }
+
+    async function deleteCurrentMessage() {
+      showDeleteConfirm();
     }
 
     function readMessageAloud() {
