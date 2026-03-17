@@ -34,6 +34,70 @@ const MAX_PHOTO_BASE64 = 500 * 1024; // 500KB decoded for photos
 const MAX_VOICEMAIL_BASE64 = 5 * 1024 * 1024; // 5MB for voicemails
 const MAX_SCREENSHOT_BASE64 = 200 * 1024; // 200KB for screenshots
 
+// ===== SECURITY: FIELD-LEVEL ENCRYPTION (AES-GCM) =====
+// Encrypts sensitive fields (medical, care notes, patient details) before KV storage
+const SENSITIVE_FIELDS = ['gp', 'medications', 'allergies', 'conditions', 'careNotes', 'nhsNumber', 'keySafeCode', 'nextOfKin', 'dob'];
+
+async function getEncryptionKey(env) {
+  // Use a stable key derived from a secret. In production, use env.ENCRYPTION_KEY secret.
+  const keyMaterial = env.ENCRYPTION_KEY || 'ken-default-encryption-key-2026';
+  const encoder = new TextEncoder();
+  const rawKey = await crypto.subtle.digest('SHA-256', encoder.encode(keyMaterial));
+  return crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+async function encryptField(env, plaintext) {
+  if (!plaintext || typeof plaintext !== 'string') return plaintext;
+  const key = await getEncryptionKey(env);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(plaintext);
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
+  // Store as base64: iv:ciphertext
+  const ivB64 = btoa(String.fromCharCode(...iv));
+  const ctB64 = btoa(String.fromCharCode(...new Uint8Array(ciphertext)));
+  return 'ENC:' + ivB64 + ':' + ctB64;
+}
+
+async function decryptField(env, encrypted) {
+  if (!encrypted || typeof encrypted !== 'string' || !encrypted.startsWith('ENC:')) return encrypted;
+  try {
+    const key = await getEncryptionKey(env);
+    const parts = encrypted.slice(4).split(':');
+    const iv = Uint8Array.from(atob(parts[0]), c => c.charCodeAt(0));
+    const ciphertext = Uint8Array.from(atob(parts[1]), c => c.charCodeAt(0));
+    const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+    return new TextDecoder().decode(decrypted);
+  } catch {
+    return encrypted; // Return as-is if decryption fails (legacy unencrypted data)
+  }
+}
+
+async function encryptObject(env, obj, fields) {
+  const result = { ...obj };
+  for (const field of fields) {
+    if (result[field] !== undefined && result[field] !== null) {
+      if (typeof result[field] === 'string') {
+        result[field] = await encryptField(env, result[field]);
+      } else if (typeof result[field] === 'object') {
+        result[field] = await encryptField(env, JSON.stringify(result[field]));
+      }
+    }
+  }
+  return result;
+}
+
+async function decryptObject(env, obj, fields) {
+  const result = { ...obj };
+  for (const field of fields) {
+    if (result[field] !== undefined && typeof result[field] === 'string' && result[field].startsWith('ENC:')) {
+      const decrypted = await decryptField(env, result[field]);
+      // Try parsing as JSON (for arrays/objects that were stringified)
+      try { result[field] = JSON.parse(decrypted); } catch { result[field] = decrypted; }
+    }
+  }
+  return result;
+}
+
 // ===== ROLE & PERMISSIONS SYSTEM =====
 // Roles (ascending access): user, standard, admin, carer, hq
 const VALID_ROLES = ['user', 'standard', 'admin', 'carer', 'hq'];
@@ -435,6 +499,22 @@ export default {
       if (!perm.allowed) return json({ error: 'Insufficient permissions' }, 403);
       const audit = await env.KEN_KV.get(`audit:${deviceId}`, 'json') || [];
       return json({ audit });
+    }
+
+    // List audit archives
+    if (request.method === 'GET' && path.match(/^\/api\/audit\/[\w-]+\/archives$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const perm = requirePermission(auth.user, deviceId, 'view:audit');
+      if (!perm.allowed) return json({ error: 'Insufficient permissions' }, 403);
+      const archiveList = await env.KEN_KV.list({ prefix: `audit-archive:${deviceId}:` });
+      const archives = [];
+      for (const key of archiveList.keys) {
+        const data = await env.KEN_KV.get(key.name, 'json');
+        if (data) archives.push({ key: key.name, count: data.length, entries: data });
+      }
+      return json({ archives });
     }
 
     // Device audit log — POST from Pi device (requires device key auth)
@@ -881,6 +961,7 @@ export default {
         if (name !== undefined) contact.name = name;
         if (relationship !== undefined) contact.relationship = relationship;
         if (phoneNumber !== undefined) contact.phoneNumber = phoneNumber;
+        if (body.birthday !== undefined) contact.birthday = body.birthday; // YYYY-MM-DD format
         await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
         return json({ success: true });
       } catch {
@@ -1006,7 +1087,8 @@ export default {
         const userRole = getUserRole(auth.user, deviceId);
         if (!hasPermission(userRole, 'view:medical')) return json({ error: 'Insufficient permissions' }, 403);
       }
-      const medical = await env.KEN_KV.get(`medical:${deviceId}`, 'json') || { gp: {}, medications: [], allergies: [], conditions: [], careNotes: '' };
+      const raw = await env.KEN_KV.get(`medical:${deviceId}`, 'json') || { gp: {}, medications: [], allergies: [], conditions: [], careNotes: '' };
+      const medical = await decryptObject(env, raw, SENSITIVE_FIELDS);
       return json(medical);
     }
 
@@ -1025,7 +1107,8 @@ export default {
         if (body.conditions !== undefined) existing.conditions = body.conditions;
         existing.updatedAt = new Date().toISOString();
         existing.updatedBy = auth.user.email;
-        await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(existing));
+        const encrypted = await encryptObject(env, existing, SENSITIVE_FIELDS);
+        await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(encrypted));
         await logAudit(env, deviceId, auth.user.email, 'Updated medical info', { fields: Object.keys(body).filter(k => body[k] !== undefined) });
         return json({ success: true });
       } catch {
@@ -1046,7 +1129,8 @@ export default {
         existing.careNotes = sanitize(body.careNotes || '');
         existing.careNotesUpdatedAt = new Date().toISOString();
         existing.careNotesUpdatedBy = auth.user.email;
-        await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(existing));
+        const encMedical = await encryptObject(env, existing, SENSITIVE_FIELDS);
+        await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(encMedical));
         await logAudit(env, deviceId, auth.user.email, 'Updated care notes', {});
         return json({ success: true });
       } catch {
@@ -1120,7 +1204,8 @@ export default {
           updatedAt: new Date().toISOString(),
           updatedBy: auth.user.email,
         };
-        await env.KEN_KV.put(key, JSON.stringify(patient));
+        const encPatient = await encryptObject(env, patient, SENSITIVE_FIELDS);
+        await env.KEN_KV.put(key, JSON.stringify(encPatient));
         await logAudit(env, deviceId, auth.user.email, 'Updated patient details', {});
         return json({ success: true });
       } catch {
@@ -1134,7 +1219,8 @@ export default {
       if (auth.error) return auth.response;
       const userRole = getUserRole(auth.user, deviceId);
       if (userRole !== 'carer' && userRole !== 'admin') return json({ error: 'Carer or admin access required' }, 403);
-      const patient = await env.KEN_KV.get(`patient:${deviceId}`, 'json') || {};
+      const rawPatient = await env.KEN_KV.get(`patient:${deviceId}`, 'json') || {};
+      const patient = await decryptObject(env, rawPatient, SENSITIVE_FIELDS);
       return json(patient);
     }
 
@@ -2208,6 +2294,32 @@ export default {
       return json({ success: true });
     }
 
+    // ===== BIRTHDAY REMINDER SETTINGS =====
+    if (request.method === 'POST' && path.match(/^\/api\/settings\/[\w-]+\/birthdays$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'edit:settings')) return json({ error: 'Insufficient permissions' }, 403);
+      try {
+        const body = await request.json();
+        const prefs = {
+          enabled: body.enabled !== false,
+          notifyTime: body.notifyTime || '09:00', // HH:MM when to send reminder
+          daysBefore: body.daysBefore || [0, 1, 7], // days before birthday to notify (0 = on the day)
+        };
+        await env.KEN_KV.put(`birthday-prefs:${deviceId}`, JSON.stringify(prefs));
+        await logAudit(env, deviceId, auth.user.email, 'Updated birthday reminder settings', prefs);
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    if (request.method === 'GET' && path.match(/^\/api\/settings\/[\w-]+\/birthdays$/)) {
+      const deviceId = path.split('/')[3];
+      const prefs = await env.KEN_KV.get(`birthday-prefs:${deviceId}`, 'json');
+      return json(prefs || { enabled: true, notifyTime: '09:00', daysBefore: [0, 1, 7] });
+    }
+
     // ===== GROUP ENDPOINTS =====
 
     // Create a group
@@ -2801,6 +2913,64 @@ export default {
             await env.KEN_KV.put(`check-ins:${deviceId}:${u.email}`, JSON.stringify(checkIns));
           } catch {}
         }
+      } catch {}
+    }
+
+    // ===== BIRTHDAY REMINDERS =====
+    const today = new Date();
+    const todayMonth = today.getUTCMonth() + 1;
+    const todayDay = today.getUTCDate();
+    const currentHour = today.getUTCHours();
+    const currentMinute = today.getUTCMinutes();
+
+    for (const deviceId of devices) {
+      try {
+        const prefs = await env.KEN_KV.get(`birthday-prefs:${deviceId}`, 'json');
+        if (!prefs || !prefs.enabled) continue;
+        const [notifH, notifM] = (prefs.notifyTime || '09:00').split(':').map(Number);
+        // Only check within the 2-minute cron window of the notification time
+        if (currentHour !== notifH || currentMinute < notifM || currentMinute > notifM + 2) continue;
+        const daysBefore = prefs.daysBefore || [0, 1, 7];
+        const contacts = await env.KEN_KV.get(`contactlist:${deviceId}`, 'json') || [];
+        const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
+        const userName = deviceInfo.userName || 'The Ken user';
+        const sentKey = `birthday-sent:${deviceId}:${today.toISOString().slice(0, 10)}`;
+        const alreadySent = await env.KEN_KV.get(sentKey, 'json') || [];
+
+        for (const contact of contacts) {
+          if (!contact.birthday) continue;
+          const [bYear, bMonth, bDay] = contact.birthday.split('-').map(Number);
+          // Check each daysBefore offset
+          for (const daysOffset of daysBefore) {
+            const targetDate = new Date(Date.UTC(today.getUTCFullYear(), todayMonth - 1, todayDay + daysOffset));
+            const targetMonth = targetDate.getUTCMonth() + 1;
+            const targetDay = targetDate.getUTCDate();
+            if (bMonth === targetMonth && bDay === targetDay) {
+              const notifKey = contact.id + ':' + daysOffset;
+              if (alreadySent.includes(notifKey)) continue;
+              alreadySent.push(notifKey);
+              // Send birthday reminder to all admin/carer users
+              const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+              const msgText = daysOffset === 0
+                ? "Today is " + contact.name + "'s birthday!"
+                : contact.name + "'s birthday is in " + daysOffset + " day" + (daysOffset > 1 ? 's' : '') + " (" + contact.birthday + ")";
+              for (const key of allUsers.keys) {
+                try {
+                  const u = await env.KEN_KV.get(key.name, 'json');
+                  if (!u || !u.devices || !u.devices[deviceId]) continue;
+                  await sendEmail(env, u.email,
+                    (daysOffset === 0 ? "Happy birthday " + contact.name + "!" : "Birthday reminder — " + contact.name) + " — The Ken",
+                    daysOffset === 0 ? 'Happy birthday!' : 'Birthday reminder',
+                    '<p style="color:#6B6459;line-height:1.7;">' + msgText + '</p>' +
+                    '<p style="color:#6B6459;line-height:1.7;">Send ' + sanitize(userName) + ' a message or give them a call.</p>' +
+                    '<a href="https://theken.uk/portal/" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Open Portal</a>'
+                  );
+                } catch {}
+              }
+            }
+          }
+        }
+        await env.KEN_KV.put(sentKey, JSON.stringify(alreadySent), { expirationTtl: 86400 });
       } catch {}
     }
   },
@@ -5031,8 +5201,18 @@ async function logAudit(env, deviceId, email, action, details) {
       timestamp: new Date().toISOString(),
       details: details || {}
     });
-    // Keep max 500 entries
-    while (audit.length > 500) audit.shift();
+    // Archive when hitting 500: move oldest 250 to archive chunk, keep up to 5 archives
+    if (audit.length > 500) {
+      const toArchive = audit.splice(0, 250);
+      const archiveKey = `audit-archive:${deviceId}:${new Date().toISOString()}`;
+      await env.KEN_KV.put(archiveKey, JSON.stringify(toArchive));
+      // List and prune old archives (keep max 5)
+      const archiveList = await env.KEN_KV.list({ prefix: `audit-archive:${deviceId}:` });
+      if (archiveList.keys.length > 5) {
+        const toDelete = archiveList.keys.sort((a, b) => a.name.localeCompare(b.name)).slice(0, archiveList.keys.length - 5);
+        for (const k of toDelete) await env.KEN_KV.delete(k.name);
+      }
+    }
     await env.KEN_KV.put(`audit:${deviceId}`, JSON.stringify(audit));
   } catch {
     // Audit logging should never break the main flow

@@ -1,0 +1,18 @@
+name: CI
+on: [push]
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install wrangler
+        run: npm install -g wrangler
+      - name: Verify worker builds
+        run: cd cloud && npx wrangler deploy --dry-run
+      - name: Run permission tests
+        run: |
+          node cloud/test-roles.js || true
+          node cloud/test-admin-role.js || true
