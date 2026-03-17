@@ -628,7 +628,7 @@ const server = http.createServer(async (req, res) => {
   // Return device ID
   if (req.method === 'GET' && req.url === '/api/device-id') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ deviceId: DEVICE_ID, cloudUrl: CLOUD_API }));
+    res.end(JSON.stringify({ deviceId: DEVICE_ID, cloudUrl: CLOUD_API, deviceKey: DEVICE_API_KEY }));
     return;
   }
 

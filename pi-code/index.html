@@ -2835,11 +2835,21 @@
       <div class="msg-view-from" id="msgViewFrom">Sarah</div>
       <div class="msg-view-time" id="msgViewTime">Today at 14:23</div>
       <div class="msg-view-text" id="msgViewText">Hi Mum!</div>
+      <div id="msgViewReactions" style="margin-top:12px;"></div>
     </div>
     <div class="msg-view-actions">
       <button class="read-aloud-btn" onclick="readMessageAloud()">Read Aloud</button>
       <button class="read-aloud-btn" onclick="replyFromView()" style="background:rgba(196,169,98,0.15);color:var(--gold);border:3px solid var(--gold);">Reply</button>
       <button class="read-aloud-btn" onclick="showDeleteConfirm()" style="background:rgba(100,100,100,0.1);color:var(--mid);border:3px solid var(--mid);">Delete</button>
+    </div>
+    <div style="display:flex;justify-content:center;padding:0 24px 24px;">
+      <button id="reactTriggerBtn" onclick="toggleDeviceReactPicker()" style="width:80px;height:80px;font-size:2.5rem;background:none;border:none;cursor:pointer;opacity:0.4;">😊</button>
+    </div>
+    <div id="deviceReactPicker" style="display:none;justify-content:center;gap:12px;padding:0 24px 32px;">
+      <button onclick="deviceReact('❤️')" style="width:80px;height:80px;font-size:2.5rem;background:none;border:none;cursor:pointer;">❤️</button>
+      <button onclick="deviceReact('👍')" style="width:80px;height:80px;font-size:2.5rem;background:none;border:none;cursor:pointer;">👍</button>
+      <button onclick="deviceReact('😊')" style="width:80px;height:80px;font-size:2.5rem;background:none;border:none;cursor:pointer;">😊</button>
+      <button onclick="deviceReact('👏')" style="width:80px;height:80px;font-size:2.5rem;background:none;border:none;cursor:pointer;">👏</button>
     </div>
   </div>
 
@@ -3200,11 +3210,15 @@
     <div class="reminder-notif-icon">
       <svg viewBox="0 0 24 24"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2zm-2 1H8v-6c0-2.48 1.51-4.5 4-4.5s4 2.02 4 4.5v6z"/></svg>
     </div>
-    <div class="reminder-notif-label">Reminder</div>
+    <div class="reminder-notif-label" id="reminderNotifLabel">Time for your medication</div>
     <div class="reminder-notif-time" id="reminderNotifTime"></div>
-    <div class="reminder-notif-text" id="reminderNotifText">Take your medication</div>
-    <div class="reminder-notif-actions">
-      <button class="answer-btn" onclick="dismissReminder()" style="min-width:280px;">OK</button>
+    <div class="reminder-notif-text" id="reminderNotifText" style="font-size:32px;font-weight:600;color:var(--ink);margin:16px 0;">Take your medication</div>
+    <div id="reminderSnoozeCount" style="font-size:20px;color:var(--mid);display:none;margin-bottom:12px;"></div>
+    <div id="reminderConfirmMsg" style="display:none;font-size:36px;font-weight:600;color:var(--gold);margin:24px 0;"></div>
+    <div class="reminder-notif-actions" id="reminderActions">
+      <button class="answer-btn" onclick="reminderResponse('taken')" style="min-width:280px;min-height:100px;font-size:28px;background:var(--gold);color:var(--cream);border:none;">Taken</button>
+      <button class="reject-btn" onclick="reminderResponse('not-taken')" style="min-width:280px;min-height:100px;font-size:28px;background:rgba(100,100,100,0.1);color:var(--ink);border:3px solid var(--mid);">Not Taken</button>
+      <button class="reject-btn" onclick="reminderResponse('snoozed')" style="min-width:280px;min-height:80px;font-size:24px;background:rgba(196,169,98,0.1);color:var(--gold);border:3px solid var(--gold);">Snooze 5 Minutes</button>
     </div>
   </div>
 
@@ -4931,6 +4945,21 @@
         document.getElementById('msgViewFrom').textContent = msg.from;
         document.getElementById('msgViewTime').textContent = formatMessageTime(new Date(msg.sentAt));
         document.getElementById('msgViewText').textContent = msg.text;
+
+        // Show reactions
+        var reactionsEl = document.getElementById('msgViewReactions');
+        if (msg.reactions && msg.reactions.length > 0) {
+          reactionsEl.innerHTML = msg.reactions.map(function(r) {
+            return '<span style="color:var(--gold);font-family:Jost,sans-serif;font-weight:500;font-size:1.1rem;margin-right:12px;">' + r.emoji + ' ' + (r.from || '') + '</span>';
+          }).join('');
+        } else {
+          reactionsEl.innerHTML = '';
+        }
+
+        // Reset react picker
+        document.getElementById('deviceReactPicker').style.display = 'none';
+        document.getElementById('reactTriggerBtn').style.opacity = '0.4';
+
         showScreen('messageView');
 
         // Mark as read
@@ -4994,6 +5023,48 @@
       const readVol = parseInt(localStorage.getItem('ken-read-volume') || '8');
       utterance.volume = readVol / 10;
       window.speechSynthesis.speak(utterance);
+    }
+
+    function toggleDeviceReactPicker() {
+      var picker = document.getElementById('deviceReactPicker');
+      var trigger = document.getElementById('reactTriggerBtn');
+      if (picker.style.display === 'none' || picker.style.display === '') {
+        picker.style.display = 'flex';
+        trigger.style.opacity = '1';
+      } else {
+        picker.style.display = 'none';
+        trigger.style.opacity = '0.4';
+      }
+    }
+
+    async function deviceReact(emoji) {
+      if (!currentMessage) return;
+      try {
+        var deviceResp = await fetch('http://localhost:3000/api/device-id');
+        var deviceData = await deviceResp.json();
+        await fetch(deviceData.cloudUrl + '/api/messages/' + deviceData.deviceId + '/' + currentMessage.id + '/react', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ emoji: emoji })
+        });
+        // Show selected emoji briefly
+        var trigger = document.getElementById('reactTriggerBtn');
+        trigger.textContent = emoji;
+        trigger.style.opacity = '1';
+        document.getElementById('deviceReactPicker').style.display = 'none';
+        // Update reactions display
+        var reactionsEl = document.getElementById('msgViewReactions');
+        var userName = localStorage.getItem('ken-user-name') || 'Device';
+        var existingHtml = reactionsEl.innerHTML;
+        reactionsEl.innerHTML = existingHtml + '<span style="color:var(--gold);font-family:Jost,sans-serif;font-weight:500;font-size:1.1rem;margin-right:12px;">' + emoji + ' ' + userName + '</span>';
+        // Reset trigger after 2 seconds
+        setTimeout(function() {
+          trigger.textContent = '😊';
+          trigger.style.opacity = '0.4';
+        }, 2000);
+      } catch (e) {
+        console.error('React failed', e);
+      }
     }
 
     function autoReadMessage(msg) {
@@ -5746,12 +5817,23 @@
       }
     }
 
-    function showReminderNotification(reminder) {
-      // Dismiss slideshow if active
-      dismissSlideshow();
+    let activeReminder = null;
+    let reminderSnoozeCount = 0;
+    let reminderIgnoreTimer = null;
+    const MAX_SNOOZES = 3;
 
-      document.getElementById('reminderNotifText').textContent = reminder.text;
+    function showReminderNotification(reminder) {
+      dismissSlideshow();
+      activeReminder = reminder;
+      reminderSnoozeCount = 0;
+
+      const label = reminder.label || reminder.text || 'your medication';
+      document.getElementById('reminderNotifLabel').textContent = 'Time for your medication';
+      document.getElementById('reminderNotifText').textContent = label;
       document.getElementById('reminderNotifTime').textContent = reminder.time;
+      document.getElementById('reminderSnoozeCount').style.display = 'none';
+      document.getElementById('reminderConfirmMsg').style.display = 'none';
+      document.getElementById('reminderActions').style.display = 'flex';
       document.getElementById('reminderNotification').classList.add('active');
       playMessageTone();
 
@@ -5761,7 +5843,7 @@
         const delay = parseInt(localStorage.getItem('ken-read-delay') || '3') * 1000;
         setTimeout(() => {
           window.speechSynthesis.cancel();
-          const utterance = new SpeechSynthesisUtterance('Reminder: ' + reminder.text);
+          const utterance = new SpeechSynthesisUtterance('Time for ' + label);
           utterance.lang = 'en-GB';
           utterance.rate = 0.9;
           const readVol = parseInt(localStorage.getItem('ken-read-volume') || '8');
@@ -5769,11 +5851,95 @@
           window.speechSynthesis.speak(utterance);
         }, delay);
       }
+
+      // Auto-mark as ignored after 10 minutes of no response
+      if (reminderIgnoreTimer) clearTimeout(reminderIgnoreTimer);
+      reminderIgnoreTimer = setTimeout(() => {
+        if (activeReminder && document.getElementById('reminderNotification').classList.contains('active')) {
+          reminderResponse('ignored');
+        }
+      }, 600000); // 10 minutes
+    }
+
+    async function reminderResponse(action) {
+      if (!activeReminder) return;
+      window.speechSynthesis.cancel();
+      if (reminderIgnoreTimer) { clearTimeout(reminderIgnoreTimer); reminderIgnoreTimer = null; }
+
+      if (action === 'snoozed') {
+        reminderSnoozeCount++;
+        if (reminderSnoozeCount >= MAX_SNOOZES) {
+          // Max snoozes reached — treat as not taken
+          action = 'not-taken';
+        } else {
+          // Hide and re-show in 5 minutes
+          document.getElementById('reminderNotification').classList.remove('active');
+          const snoozeReminder = activeReminder;
+          setTimeout(() => {
+            activeReminder = snoozeReminder;
+            document.getElementById('reminderSnoozeCount').textContent = 'Snoozed ' + reminderSnoozeCount + ' of ' + MAX_SNOOZES + ' times';
+            document.getElementById('reminderSnoozeCount').style.display = 'block';
+            document.getElementById('reminderNotifLabel').textContent = 'Reminder (snoozed)';
+            document.getElementById('reminderConfirmMsg').style.display = 'none';
+            document.getElementById('reminderActions').style.display = 'flex';
+            document.getElementById('reminderNotification').classList.add('active');
+            playMessageTone();
+            // Reset ignore timer
+            if (reminderIgnoreTimer) clearTimeout(reminderIgnoreTimer);
+            reminderIgnoreTimer = setTimeout(() => {
+              if (activeReminder) reminderResponse('ignored');
+            }, 600000);
+          }, 300000); // 5 minutes
+
+          // Notify cloud of snooze
+          try {
+            const deviceData = await fetch('http://localhost:3000/api/device-id').then(r => r.json());
+            fetch(deviceData.cloudUrl + '/api/reminders/' + deviceData.deviceId + '/' + activeReminder.id + '/response', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-Ken-Device-Key': deviceData.deviceKey || '' },
+              body: JSON.stringify({ action: 'snoozed', snoozeCount: reminderSnoozeCount })
+            }).catch(() => {});
+          } catch {}
+          return;
+        }
+      }
+
+      // Show confirmation
+      const confirmEl = document.getElementById('reminderConfirmMsg');
+      const actionsEl = document.getElementById('reminderActions');
+      actionsEl.style.display = 'none';
+
+      if (action === 'taken') {
+        confirmEl.textContent = '✓ Recorded — thank you';
+        confirmEl.style.color = 'var(--gold)';
+      } else {
+        confirmEl.textContent = action === 'ignored' ? 'No response recorded' : 'Recorded — your carer has been notified';
+        confirmEl.style.color = 'var(--mid)';
+      }
+      confirmEl.style.display = 'block';
+
+      // Notify cloud
+      try {
+        const deviceData = await fetch('http://localhost:3000/api/device-id').then(r => r.json());
+        fetch(deviceData.cloudUrl + '/api/reminders/' + deviceData.deviceId + '/' + activeReminder.id + '/response', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Ken-Device-Key': deviceData.deviceKey || '' },
+          body: JSON.stringify({ action, snoozeCount: reminderSnoozeCount })
+        }).catch(() => {});
+      } catch {}
+
+      activeReminder = null;
+      // Auto-dismiss after 3 seconds
+      setTimeout(() => {
+        document.getElementById('reminderNotification').classList.remove('active');
+      }, 3000);
     }
 
     function dismissReminder() {
       document.getElementById('reminderNotification').classList.remove('active');
       window.speechSynthesis.cancel();
+      if (reminderIgnoreTimer) { clearTimeout(reminderIgnoreTimer); reminderIgnoreTimer = null; }
+      activeReminder = null;
     }
 
     // Check reminders every 30 seconds

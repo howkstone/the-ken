@@ -111,7 +111,7 @@ export default {
 
     // ===== DEVICE AUTHENTICATION MIDDLEWARE =====
     // All device-scoped endpoints require either a valid device API key or user session
-    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback)\/([a-f0-9-]+)/);
+    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts)\/([a-f0-9-]+)/);
     if (deviceScopeMatch) {
       const scopedDeviceId = deviceScopeMatch[1];
       // Public endpoints exempt from auth (QR code contact form, feedback, heartbeat)
@@ -2038,6 +2038,176 @@ export default {
       return json(pref || { enabled: false });
     }
 
+    // ===== ACTIVITY HEARTBEAT (portal sends on user interaction) =====
+    if (request.method === 'POST' && path === '/api/auth/activity') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      await env.KEN_KV.put(`activity:${auth.user.email}`, new Date().toISOString(), { expirationTtl: 600 });
+      return json({ success: true });
+    }
+
+    // ===== NOTIFICATION COUNTS (for portal bell) =====
+    if (request.method === 'GET' && path.match(/^\/api\/notifications\/[\w-]+$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      // Unread messages: messages in history that are replies (from device) without readAt
+      const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+      const unreadMessages = history.filter(m => m.isReply && !m.readAt && !m.deletedForEveryone && !m.deletedBySender).length;
+      // Unread voicemails
+      const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+      const unreadVoicemails = voicemails.filter(v => !v.played).length;
+      // Missed calls (from call history, missed in last 24h)
+      const callHistory = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || {};
+      const calls = callHistory.calls || [];
+      const oneDayAgo = Date.now() - 86400000;
+      const missedCalls = calls.filter(c => c.status === 'missed' && new Date(c.timestamp).getTime() > oneDayAgo).length;
+      // Medication alerts (for carers): check recent reminder responses marked not-taken
+      const medAlerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+      const unresolvedMedAlerts = medAlerts.filter(a => !a.resolved).length;
+      return json({ unreadMessages, unreadVoicemails, missedCalls, medicationAlerts: unresolvedMedAlerts, total: unreadMessages + unreadVoicemails + missedCalls + unresolvedMedAlerts });
+    }
+
+    // ===== NOTIFICATION PREFERENCES (per user) =====
+    if (request.method === 'GET' && path === '/api/auth/notification-preferences') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const prefs = await env.KEN_KV.get(`notif-prefs:${auth.user.email}`, 'json');
+      return json(prefs || { timing: '2min', messages: true, voicemails: true, missedCalls: true, medicationAlerts: true });
+    }
+
+    if (request.method === 'POST' && path === '/api/auth/notification-preferences') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      try {
+        const body = await request.json();
+        const validTimings = ['immediate', '2min', '5min', '15min', 'hourly', 'off'];
+        const prefs = {
+          timing: validTimings.includes(body.timing) ? body.timing : '2min',
+          messages: body.messages !== false,
+          voicemails: body.voicemails !== false,
+          missedCalls: body.missedCalls !== false,
+          medicationAlerts: body.medicationAlerts !== false,
+        };
+        await env.KEN_KV.put(`notif-prefs:${auth.user.email}`, JSON.stringify(prefs));
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== MESSAGE REACTIONS (emoji) =====
+    if (request.method === 'POST' && path.match(/^\/api\/messages\/[\w-]+\/[\w-]+\/react$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const messageId = parts[4];
+      try {
+        const body = await request.json();
+        const { emoji } = body;
+        const allowedEmoji = ['❤️', '👍', '😊', '👏'];
+        if (!emoji || !allowedEmoji.includes(emoji)) return json({ error: 'Invalid emoji. Allowed: ' + allowedEmoji.join(' ') }, 400);
+        // Determine reactor identity
+        const deviceKey = request.headers.get('X-Ken-Device-Key');
+        const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+        const isDevice = deviceKey && storedKey && deviceKey === storedKey;
+        const session = await getSession(request, env);
+        let reactorName, reactorId;
+        if (isDevice) {
+          const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
+          reactorName = deviceInfo.userName || 'Ken';
+          reactorId = 'device:' + deviceId;
+        } else if (session) {
+          const user = await env.KEN_KV.get(`user:${session.email}`, 'json');
+          reactorName = user ? user.name : session.email;
+          reactorId = 'user:' + session.email;
+        } else {
+          return json({ error: 'Authentication required' }, 401);
+        }
+        const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+        const msg = history.find(m => m.id === messageId);
+        if (!msg) return json({ error: 'Message not found' }, 404);
+        if (!msg.reactions) msg.reactions = [];
+        // One reaction per person — remove existing then add
+        msg.reactions = msg.reactions.filter(r => r.reactorId !== reactorId);
+        msg.reactions.push({ emoji, reactorName, reactorId, reactedAt: new Date().toISOString() });
+        await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== MEDICATION REMINDER RESPONSE (from device) =====
+    if (request.method === 'POST' && path.match(/^\/api\/reminders\/[\w-]+\/[\w-]+\/response$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const reminderId = parts[4];
+      try {
+        const body = await request.json();
+        const { action } = body; // 'taken', 'not-taken', 'snoozed', 'ignored'
+        if (!action || !['taken', 'not-taken', 'snoozed', 'ignored'].includes(action)) {
+          return json({ error: 'action must be taken, not-taken, snoozed, or ignored' }, 400);
+        }
+        const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
+        const reminder = reminders.find(r => r.id === reminderId);
+        const label = reminder ? (reminder.label || reminder.text || 'Medication') : 'Medication';
+        // Log to audit
+        await logAudit(env, deviceId, 'device', 'Medication reminder: ' + action, { reminderId, label, snoozeCount: body.snoozeCount || 0 });
+        if (action === 'not-taken' || action === 'ignored') {
+          // Alert carers via email
+          const medAlerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+          medAlerts.push({ id: crypto.randomUUID(), reminderId, label, action, timestamp: new Date().toISOString(), resolved: false });
+          if (medAlerts.length > 50) medAlerts.splice(0, medAlerts.length - 50);
+          await env.KEN_KV.put(`med-alerts:${deviceId}`, JSON.stringify(medAlerts));
+          // Email carers/admins
+          const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
+          const userName = deviceInfo.userName || 'The Ken user';
+          const actionText = action === 'ignored' ? 'did not respond to' : 'marked as not taken';
+          const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+          for (const key of allUsers.keys) {
+            try {
+              const u = await env.KEN_KV.get(key.name, 'json');
+              if (!u || !u.devices || !u.devices[deviceId]) continue;
+              const uRole = u.devices[deviceId].role;
+              if (uRole === 'admin' || uRole === 'carer') {
+                await sendEmail(env, u.email,
+                  'Medication alert — ' + userName,
+                  'Medication not taken',
+                  '<p style="color:#6B6459;line-height:1.7;"><strong>' + sanitize(userName) + '</strong> ' + actionText + ' their medication reminder:</p>' +
+                  '<p style="color:#1A1714;font-weight:500;font-size:16px;margin:12px 0;">' + sanitize(label) + '</p>' +
+                  '<p style="color:#6B6459;line-height:1.7;">Please check on them when possible.</p>' +
+                  '<a href="https://theken.uk/portal/" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Open Portal</a>'
+                );
+              }
+            } catch {}
+          }
+        }
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== MEDICATION ALERTS (for portal notification bell) =====
+    if (request.method === 'GET' && path.match(/^\/api\/med-alerts\/[\w-]+$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const alerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+      return json({ alerts });
+    }
+
+    if (request.method === 'POST' && path.match(/^\/api\/med-alerts\/[\w-]+\/[\w-]+\/resolve$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const alertId = parts[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const alerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+      const alert = alerts.find(a => a.id === alertId);
+      if (alert) {
+        alert.resolved = true;
+        alert.resolvedBy = auth.user.email;
+        alert.resolvedAt = new Date().toISOString();
+        await env.KEN_KV.put(`med-alerts:${deviceId}`, JSON.stringify(alerts));
+      }
+      return json({ success: true });
+    }
+
     return new Response('Not found', { status: 404 });
   },
 
@@ -2108,6 +2278,92 @@ export default {
       } catch {
         // Continue to next device on error
       }
+    }
+
+    // ===== INTELLIGENT EMAIL NOTIFICATIONS =====
+    // Check all devices for unread messages/voicemails/missed calls
+    // Email users only if they've been inactive for their configured delay
+    const TIMING_MS = { 'immediate': 0, '2min': 120000, '5min': 300000, '15min': 900000, 'hourly': 3600000 };
+    const now = Date.now();
+
+    for (const deviceId of devices) {
+      try {
+        // Get all users with access to this device
+        const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+        const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+        const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+        const callHistoryData = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || {};
+        const calls = callHistoryData.calls || [];
+        const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
+        const userName = deviceInfo.userName || 'The Ken';
+
+        for (const key of allUsers.keys) {
+          try {
+            const u = await env.KEN_KV.get(key.name, 'json');
+            if (!u || !u.devices || !u.devices[deviceId]) continue;
+            const prefs = await env.KEN_KV.get(`notif-prefs:${u.email}`, 'json') || { timing: '2min', messages: true, voicemails: true, missedCalls: true, medicationAlerts: true };
+            if (prefs.timing === 'off') continue;
+            const delayMs = TIMING_MS[prefs.timing] || 120000;
+
+            // Check if user is active (suppress email if active)
+            const lastActivity = await env.KEN_KV.get(`activity:${u.email}`);
+            if (lastActivity && (now - new Date(lastActivity).getTime()) < delayMs) continue;
+
+            let shouldEmail = false;
+            let emailSubject = '';
+            let emailBody = '';
+            const items = [];
+
+            // Check unread messages (replies from device that this user hasn't seen)
+            if (prefs.messages) {
+              const unread = history.filter(m => m.isReply && !m.readAt && !m.emailNotificationSent && !m.deletedForEveryone &&
+                m.sentAt && (now - new Date(m.sentAt).getTime()) > delayMs);
+              if (unread.length > 0) {
+                items.push(unread.length + ' new message' + (unread.length > 1 ? 's' : '') + ' from ' + userName);
+                // Mark as notified
+                unread.forEach(m => { m.emailNotificationSent = true; });
+                shouldEmail = true;
+              }
+            }
+
+            // Check unwatched voicemails
+            if (prefs.voicemails) {
+              const unwatched = voicemails.filter(v => !v.played && !v.emailNotificationSent &&
+                v.timestamp && (now - new Date(v.timestamp).getTime()) > delayMs);
+              if (unwatched.length > 0) {
+                items.push(unwatched.length + ' new voicemail' + (unwatched.length > 1 ? 's' : ''));
+                unwatched.forEach(v => { v.emailNotificationSent = true; });
+                shouldEmail = true;
+              }
+            }
+
+            // Check missed calls (last 24h, not already notified)
+            if (prefs.missedCalls) {
+              const missed = calls.filter(c => c.status === 'missed' && !c.emailNotificationSent &&
+                c.timestamp && (now - new Date(c.timestamp).getTime()) > delayMs &&
+                (now - new Date(c.timestamp).getTime()) < 86400000);
+              if (missed.length > 0) {
+                items.push(missed.length + ' missed call' + (missed.length > 1 ? 's' : ''));
+                missed.forEach(c => { c.emailNotificationSent = true; });
+                shouldEmail = true;
+              }
+            }
+
+            if (shouldEmail && items.length > 0) {
+              emailSubject = items[0] + ' — The Ken';
+              emailBody = '<p style="color:#6B6459;line-height:1.7;">You have notifications from <strong>' + sanitize(userName) + '</strong>:</p>' +
+                '<ul style="color:#1A1714;line-height:2;">' + items.map(i => '<li>' + i + '</li>').join('') + '</ul>' +
+                '<a href="https://theken.uk/portal/" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Open Portal</a>';
+              await sendEmail(env, u.email, emailSubject, 'New notifications', emailBody);
+            }
+          } catch {}
+        }
+
+        // Persist emailNotificationSent flags
+        if (history.length > 0) await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        if (voicemails.length > 0) await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
+        if (calls.length > 0) await env.KEN_KV.put(`callhistory:${deviceId}`, JSON.stringify({ calls }));
+      } catch {}
     }
   },
 };
