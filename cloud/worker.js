@@ -111,7 +111,7 @@ export default {
 
     // ===== DEVICE AUTHENTICATION MIDDLEWARE =====
     // All device-scoped endpoints require either a valid device API key or user session
-    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts|export)\/([a-f0-9-]+)/);
+    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts|export|groups)\/([a-f0-9-]+)/);
     if (deviceScopeMatch) {
       const scopedDeviceId = deviceScopeMatch[1];
       // Public endpoints exempt from auth (QR code contact form, feedback, heartbeat)
@@ -2206,6 +2206,142 @@ export default {
         await env.KEN_KV.put(`med-alerts:${deviceId}`, JSON.stringify(alerts));
       }
       return json({ success: true });
+    }
+
+    // ===== GROUP ENDPOINTS =====
+
+    // Create a group
+    if (request.method === 'POST' && path.match(/^\/api\/groups\/[\w-]+$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      try {
+        const body = await request.json();
+        const { name, coverPhoto, members } = body;
+        if (!name || !name.trim()) return json({ error: 'Group name required' }, 400);
+        const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+        const group = {
+          id: crypto.randomUUID(),
+          name: sanitize(name),
+          coverPhoto: coverPhoto || '',
+          members: (members || []).map(m => ({ userId: m.userId || m.email, name: sanitize(m.name || ''), role: m.role === 'admin' ? 'admin' : 'member' })),
+          createdBy: auth.user.email,
+          createdAt: new Date().toISOString(),
+        };
+        // Ensure creator is admin member
+        if (!group.members.find(m => m.userId === auth.user.email)) {
+          group.members.unshift({ userId: auth.user.email, name: auth.user.name, role: 'admin' });
+        }
+        groups.push(group);
+        await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(groups));
+        await logAudit(env, deviceId, auth.user.email, 'Created group', { groupName: group.name, memberCount: group.members.length });
+        return json({ success: true, group });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // List groups for a device
+    if (request.method === 'GET' && path.match(/^\/api\/groups\/[\w-]+$/)) {
+      const deviceId = path.split('/')[3];
+      const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+      return json({ groups });
+    }
+
+    // Get single group
+    if (request.method === 'GET' && path.match(/^\/api\/groups\/[\w-]+\/[\w-]+$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const groupId = parts[4];
+      const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+      const group = groups.find(g => g.id === groupId);
+      if (!group) return json({ error: 'Group not found' }, 404);
+      return json({ group });
+    }
+
+    // Update group (name, coverPhoto, members)
+    if (request.method === 'POST' && path.match(/^\/api\/groups\/[\w-]+\/[\w-]+\/update$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const groupId = parts[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+      const group = groups.find(g => g.id === groupId);
+      if (!group) return json({ error: 'Group not found' }, 404);
+      // Only group admins can update
+      const memberEntry = group.members.find(m => m.userId === auth.user.email);
+      if (!memberEntry || memberEntry.role !== 'admin') return json({ error: 'Group admin access required' }, 403);
+      try {
+        const body = await request.json();
+        if (body.name !== undefined) group.name = sanitize(body.name);
+        if (body.coverPhoto !== undefined) group.coverPhoto = body.coverPhoto;
+        if (body.members !== undefined) {
+          group.members = body.members.map(m => ({ userId: m.userId || m.email, name: sanitize(m.name || ''), role: m.role === 'admin' ? 'admin' : 'member' }));
+        }
+        group.updatedAt = new Date().toISOString();
+        await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(groups));
+        await logAudit(env, deviceId, auth.user.email, 'Updated group', { groupId, groupName: group.name });
+        return json({ success: true, group });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // Delete group
+    if (request.method === 'DELETE' && path.match(/^\/api\/groups\/[\w-]+\/[\w-]+$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const groupId = parts[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+      const group = groups.find(g => g.id === groupId);
+      if (!group) return json({ error: 'Group not found' }, 404);
+      const memberEntry = group.members.find(m => m.userId === auth.user.email);
+      const userRole = getUserRole(auth.user, deviceId);
+      if ((!memberEntry || memberEntry.role !== 'admin') && !['admin', 'hq'].includes(userRole)) {
+        return json({ error: 'Group admin or device admin access required' }, 403);
+      }
+      const filtered = groups.filter(g => g.id !== groupId);
+      await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(filtered));
+      await logAudit(env, deviceId, auth.user.email, 'Deleted group', { groupId, groupName: group.name });
+      return json({ success: true });
+    }
+
+    // Send group message (delivers to device pending queue + history, tagged with group)
+    if (request.method === 'POST' && path.match(/^\/api\/messages\/[\w-]+\/group\/[\w-]+$/)) {
+      const parts = path.split('/');
+      const deviceId = parts[3];
+      const groupId = parts[5];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'send:messages')) return json({ error: 'Insufficient permissions' }, 403);
+      try {
+        const body = await request.json();
+        const { text } = body;
+        if (!text || !text.trim()) return json({ error: 'Text required' }, 400);
+        const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+        const group = groups.find(g => g.id === groupId);
+        if (!group) return json({ error: 'Group not found' }, 404);
+        const message = {
+          id: crypto.randomUUID(),
+          from: auth.user.name || auth.user.email,
+          fromEmail: auth.user.email,
+          text: sanitize(text),
+          sentAt: new Date().toISOString(),
+          deliveredAt: null, readAt: null,
+          groupId, groupName: group.name,
+          deletedBySender: false, deletedByRecipient: false, deletedForEveryone: false,
+          emailNotificationSent: false,
+        };
+        // Add to pending (Pi will poll) and history
+        const pending = await env.KEN_KV.get(`messages:${deviceId}`, 'json') || [];
+        pending.push(message);
+        await env.KEN_KV.put(`messages:${deviceId}`, JSON.stringify(pending));
+        const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+        history.push(message);
+        if (history.length > 100) history.splice(0, history.length - 100);
+        await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        return json({ success: true, message: { id: message.id } });
+      } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
     // ===== SCHEDULED MESSAGES =====

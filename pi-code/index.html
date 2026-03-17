@@ -4846,17 +4846,21 @@
         allMessages = data.messages;
         const kenName = localStorage.getItem('ken-user-name') || 'Ken';
 
-        // Group into conversations by contact name
+        // Group into conversations by contact name or group name
         const convos = {};
         data.messages.forEach(m => {
-          // Determine which contact this message belongs to
           let contact;
-          if (m.isReply) {
+          let isGroup = false;
+          if (m.groupId && m.groupName) {
+            // Group message — key by group name
+            contact = m.groupName;
+            isGroup = true;
+          } else if (m.isReply) {
             contact = m.to || 'Unknown';
           } else {
             contact = m.from || 'Unknown';
           }
-          if (!convos[contact]) convos[contact] = { messages: [], unread: 0, latest: null };
+          if (!convos[contact]) convos[contact] = { messages: [], unread: 0, latest: null, isGroup };
           convos[contact].messages.push(m);
           if (!m.read && !m.isReply) convos[contact].unread++;
           const t = new Date(m.sentAt).getTime();
@@ -4870,13 +4874,17 @@
           const lastMsg = convo.messages.slice().sort((a, b) =>
             new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
           )[0];
-          const preview = lastMsg.isReply
-            ? 'You: ' + lastMsg.text
-            : lastMsg.text;
+          let preview;
+          if (convo.isGroup) {
+            preview = (lastMsg.from || 'Someone') + ': ' + lastMsg.text;
+          } else {
+            preview = lastMsg.isReply ? 'You: ' + lastMsg.text : lastMsg.text;
+          }
           const timeStr = formatMessageTime(new Date(lastMsg.sentAt));
           const hasUnread = convo.unread > 0;
+          const groupLabel = convo.isGroup ? '<span style="font-size:18px;color:var(--gold);font-weight:500;margin-right:8px;">Group</span>' : '';
           return `<div class="msg-item ${hasUnread ? 'unread' : ''}" onclick="openThread('${escHtml(contact)}')">
-            <div class="msg-from">${escHtml(contact)}${convo.unread > 0 ? '<span class="msg-unread-badge">' + convo.unread + '</span>' : ''}</div>
+            <div class="msg-from">${groupLabel}${escHtml(contact)}${convo.unread > 0 ? '<span class="msg-unread-badge">' + convo.unread + '</span>' : ''}</div>
             <div class="msg-text">${escHtml(preview.length > 80 ? preview.substring(0, 80) + '...' : preview)}</div>
             <div class="msg-time">${timeStr}</div>
           </div>`;
@@ -4892,8 +4900,9 @@
       const kenName = localStorage.getItem('ken-user-name') || 'Ken';
       const threadEl = document.getElementById('threadMessages');
 
-      // Filter messages for this contact
+      // Filter messages for this contact or group
       const msgs = allMessages.filter(m => {
+        if (m.groupName === contact) return true; // Group message
         if (m.isReply) return (m.to || '') === contact;
         return (m.from || '') === contact;
       }).sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
