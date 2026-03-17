@@ -2603,6 +2603,78 @@ export default {
       });
     }
 
+    // ===== USER MANAGEMENT (per device) =====
+    // List all users with access to this device
+    if (request.method === 'GET' && path.match(/^\/api\/device\/[\w-]+\/users$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!['admin', 'hq'].includes(userRole)) return json({ error: 'Admin access required' }, 403);
+      const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+      const deviceUsers = [];
+      for (const key of allUsers.keys) {
+        try {
+          const u = await env.KEN_KV.get(key.name, 'json');
+          if (!u) continue;
+          // Check if user has access via devices object or globalRole
+          let role = null;
+          if (u.globalRole === 'hq') role = 'hq';
+          else if (u.globalRole === 'carer' && (u.carerDevices || []).includes(deviceId)) role = 'carer';
+          else if (u.devices && u.devices[deviceId]) role = u.devices[deviceId].role;
+          if (role) {
+            deviceUsers.push({ email: u.email, name: u.name, role, phone: u.phone || '', mfaEnabled: !!u.mfaEnabled, createdAt: u.createdAt });
+          }
+        } catch {}
+      }
+      return json({ users: deviceUsers });
+    }
+
+    // Change a user's role on this device
+    if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+\/users\/role$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!['admin', 'hq'].includes(userRole)) return json({ error: 'Admin access required' }, 403);
+      try {
+        const body = await request.json();
+        const { email, role } = body;
+        if (!email || !role) return json({ error: 'email and role required' }, 400);
+        if (!VALID_ROLES.includes(role)) return json({ error: 'Invalid role' }, 400);
+        const targetUser = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
+        if (!targetUser) return json({ error: 'User not found' }, 404);
+        if (!targetUser.devices) targetUser.devices = {};
+        targetUser.devices[deviceId] = { role };
+        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(targetUser));
+        await logAudit(env, deviceId, auth.user.email, 'Changed user role', { targetEmail: email, newRole: role });
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // Revoke a user's access to this device
+    if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+\/users\/revoke$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!['admin', 'hq'].includes(userRole)) return json({ error: 'Admin access required' }, 403);
+      try {
+        const body = await request.json();
+        const { email } = body;
+        if (!email) return json({ error: 'email required' }, 400);
+        if (email.toLowerCase() === auth.user.email) return json({ error: 'Cannot revoke your own access' }, 400);
+        const targetUser = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
+        if (!targetUser) return json({ error: 'User not found' }, 404);
+        if (targetUser.devices && targetUser.devices[deviceId]) {
+          delete targetUser.devices[deviceId];
+          await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(targetUser));
+        }
+        await logAudit(env, deviceId, auth.user.email, 'Revoked user access', { targetEmail: email });
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
     // ===== DEVICE DECOMMISSION (delete cascade) =====
     if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+\/decommission$/)) {
       const deviceId = path.split('/')[3];
