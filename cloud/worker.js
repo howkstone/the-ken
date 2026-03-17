@@ -3,6 +3,37 @@
 
 const ALLOWED_ORIGINS = ['https://theken.uk', 'https://www.theken.uk', 'https://ken-api.the-ken.workers.dev', 'https://api.theken.uk'];
 
+// ===== SECURITY: RATE LIMITING =====
+// IP-based rate limiting using KV with TTL
+async function checkRateLimit(env, request, action, maxAttempts, windowSeconds) {
+  const ip = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+  const key = `ratelimit:${action}:${ip}`;
+  const current = await env.KEN_KV.get(key, 'json');
+  const now = Date.now();
+  if (current && current.count >= maxAttempts && (now - current.start) < windowSeconds * 1000) {
+    return { limited: true, retryAfter: Math.ceil((current.start + windowSeconds * 1000 - now) / 1000) };
+  }
+  if (!current || (now - current.start) >= windowSeconds * 1000) {
+    await env.KEN_KV.put(key, JSON.stringify({ count: 1, start: now }), { expirationTtl: windowSeconds });
+  } else {
+    current.count++;
+    await env.KEN_KV.put(key, JSON.stringify(current), { expirationTtl: windowSeconds });
+  }
+  return { limited: false };
+}
+
+// ===== SECURITY: INPUT SANITISATION =====
+function sanitize(str) {
+  if (typeof str !== 'string') return str;
+  return str.replace(/<[^>]*>/g, '').trim();
+}
+
+// ===== SECURITY: REQUEST SIZE LIMIT =====
+const MAX_REQUEST_BODY = 5 * 1024 * 1024; // 5MB global max
+const MAX_PHOTO_BASE64 = 500 * 1024; // 500KB decoded for photos
+const MAX_VOICEMAIL_BASE64 = 5 * 1024 * 1024; // 5MB for voicemails
+const MAX_SCREENSHOT_BASE64 = 200 * 1024; // 200KB for screenshots
+
 // ===== ROLE & PERMISSIONS SYSTEM =====
 // Roles (ascending access): user, standard, admin, carer, hq
 const VALID_ROLES = ['user', 'standard', 'admin', 'carer', 'hq'];
@@ -40,7 +71,7 @@ function getCorsHeaders(request) {
   return {
     'Access-Control-Allow-Origin': allowedOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Ken-CSRF, X-Ken-Device-Key',
     'Access-Control-Allow-Credentials': 'true',
   };
 }
@@ -55,16 +86,43 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
+    // ===== SECURITY: REQUEST SIZE LIMIT =====
+    const contentLength = parseInt(request.headers.get('Content-Length') || '0');
+    if (contentLength > MAX_REQUEST_BODY) {
+      return json({ error: 'Request too large' }, 413);
+    }
+
+    // ===== SECURITY: CSRF PROTECTION =====
+    // Require X-Ken-CSRF header on all POST/DELETE from browsers.
+    // Device-key authenticated requests (Pi) are exempt.
+    if ((request.method === 'POST' || request.method === 'DELETE') && !path.startsWith('/api/auth/')) {
+      const hasCSRF = request.headers.get('X-Ken-CSRF');
+      const hasDeviceKey = request.headers.get('X-Ken-Device-Key');
+      // Public endpoints exempt: add-contact, feedback submit (these are also rate-limited)
+      const csrfExempt = (
+        path.match(/^\/api\/contacts\/[\w-]+$/) && request.method === 'POST' ||
+        path.match(/^\/api\/feedback\/[\w-]+$/) && request.method === 'POST' ||
+        path.match(/^\/api\/heartbeat\/[\w-]+/) && request.method === 'POST'
+      );
+      if (!hasCSRF && !hasDeviceKey && !csrfExempt) {
+        return json({ error: 'CSRF token required' }, 403);
+      }
+    }
+
     // ===== DEVICE AUTHENTICATION MIDDLEWARE =====
     // All device-scoped endpoints require either a valid device API key or user session
     const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback)\/([a-f0-9-]+)/);
     if (deviceScopeMatch) {
       const scopedDeviceId = deviceScopeMatch[1];
-      // Public endpoints exempt from auth (QR code contact form, feedback)
+      // Public endpoints exempt from auth (QR code contact form, feedback, heartbeat)
+      // Heartbeat does its own device-key validation internally
       const isPublicEndpoint = (
         (request.method === 'POST' && path === `/api/contacts/${scopedDeviceId}`) ||
         (request.method === 'GET' && path === `/api/contacts/${scopedDeviceId}/pending`) ||
-        (request.method === 'POST' && path === `/api/feedback/${scopedDeviceId}`)
+        (request.method === 'POST' && path === `/api/feedback/${scopedDeviceId}`) ||
+        (request.method === 'POST' && path.startsWith(`/api/heartbeat/${scopedDeviceId}`)) ||
+        (request.method === 'GET' && path.startsWith(`/api/heartbeat/${scopedDeviceId}`)) ||
+        (request.method === 'GET' && path.startsWith(`/api/check-offline/${scopedDeviceId}`))
       );
       if (!isPublicEndpoint) {
         const deviceKey = request.headers.get('X-Ken-Device-Key');
@@ -79,6 +137,8 @@ export default {
 
     // ===== AUTH ENDPOINTS =====
     if (request.method === 'POST' && path === '/api/auth/register') {
+      const rl = await checkRateLimit(env, request, 'register', 5, 300);
+      if (rl.limited) return json({ error: 'Too many attempts. Try again later.' }, 429);
       try {
         const body = await request.json();
         const { email, password, name, phone, deviceId } = body;
@@ -96,8 +156,8 @@ export default {
         }
         const user = {
           email: email.toLowerCase(),
-          name: name.trim(),
-          phone: (phone || '').trim(),
+          name: sanitize(name),
+          phone: sanitize(phone || ''),
           passwordHash,
           passwordSalt,
           photo: '',
@@ -115,6 +175,8 @@ export default {
     }
 
     if (request.method === 'POST' && path === '/api/auth/login') {
+      const rl = await checkRateLimit(env, request, 'login', 5, 60);
+      if (rl.limited) return json({ error: 'Too many login attempts. Try again in a minute.' }, 429);
       try {
         const body = await request.json();
         const { email, password, totpCode } = body;
@@ -131,8 +193,12 @@ export default {
           // Try TOTP first, then backup codes
           const validTotp = await verifyTOTP(user.mfaSecret, totpCode);
           if (!validTotp) {
-            // Check backup codes
-            const backupIdx = (user.mfaBackupCodes || []).indexOf(totpCode);
+            // Check backup codes (stored as hashes)
+            let backupIdx = -1;
+            const { hash: codeHash } = await hashPassword(totpCode, 'mfa-backup-salt');
+            for (let i = 0; i < (user.mfaBackupCodes || []).length; i++) {
+              if (timingSafeEqual(user.mfaBackupCodes[i], codeHash)) { backupIdx = i; break; }
+            }
             if (backupIdx === -1) return json({ error: 'Invalid MFA code' }, 401);
             // Consume the backup code
             user.mfaBackupCodes.splice(backupIdx, 1);
@@ -161,6 +227,8 @@ export default {
 
     // Confirm uses the setupToken from setup (no cookie needed)
     if (request.method === 'POST' && path === '/api/auth/mfa/confirm') {
+      const rl = await checkRateLimit(env, request, 'mfa-confirm', 5, 60);
+      if (rl.limited) return json({ error: 'Too many attempts. Try again in a minute.' }, 429);
       try {
         const body = await request.json();
         const { code, setupToken } = body;
@@ -175,7 +243,13 @@ export default {
         user.mfaEnabled = true;
         user.mfaSecret = setup.secret;
         const backupCodes = Array.from({ length: 8 }, () => crypto.randomUUID().slice(0, 8));
-        user.mfaBackupCodes = backupCodes;
+        // Store hashed backup codes for security; return plaintext to user once
+        const hashedBackupCodes = [];
+        for (const code of backupCodes) {
+          const { hash } = await hashPassword(code, 'mfa-backup-salt');
+          hashedBackupCodes.push(hash);
+        }
+        user.mfaBackupCodes = hashedBackupCodes;
         await env.KEN_KV.put(`user:${setup.email}`, JSON.stringify(user));
         await env.KEN_KV.delete(`mfa-setup:${setupToken}`);
         const deviceIds = Object.keys(user.devices || {});
@@ -213,6 +287,8 @@ export default {
 
     // ===== FORGOT PASSWORD =====
     if (request.method === 'POST' && path === '/api/auth/forgot-password') {
+      const rl = await checkRateLimit(env, request, 'forgot-pw', 3, 300);
+      if (rl.limited) return json({ error: 'Too many requests. Try again later.' }, 429);
       try {
         const body = await request.json();
         const { email } = body;
@@ -221,7 +297,7 @@ export default {
         // Always return success (don't reveal if account exists)
         if (!user) return json({ success: true });
         const resetToken = crypto.randomUUID();
-        await env.KEN_KV.put(`reset:${resetToken}`, JSON.stringify({ email: email.toLowerCase(), createdAt: new Date().toISOString() }), { expirationTtl: 3600 });
+        await env.KEN_KV.put(`reset:${resetToken}`, JSON.stringify({ email: email.toLowerCase(), createdAt: new Date().toISOString() }), { expirationTtl: 900 });
         // Store token on user for reference
         user.resetToken = resetToken;
         await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
@@ -229,7 +305,7 @@ export default {
         await sendEmail(env, email.toLowerCase(),
           'Reset your password \u2014 The Ken',
           'Reset your password',
-          '<p style="color:#6B6459;line-height:1.7;">Click the button below to set a new password. This link expires in 1 hour.</p>' +
+          '<p style="color:#6B6459;line-height:1.7;">Click the button below to set a new password. This link expires in 15 minutes.</p>' +
           '<a href="https://theken.uk/portal/?reset=' + resetToken + '" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Reset Password</a>' +
           '<p style="color:#6B6459;font-size:13px;margin-top:24px;">If you didn\'t request this, you can safely ignore this email.</p>'
         );
@@ -238,6 +314,8 @@ export default {
     }
 
     if (request.method === 'POST' && path === '/api/auth/reset-password') {
+      const rl = await checkRateLimit(env, request, 'reset-pw', 5, 300);
+      if (rl.limited) return json({ error: 'Too many attempts. Try again later.' }, 429);
       try {
         const body = await request.json();
         const { token, password } = body;
@@ -332,7 +410,7 @@ export default {
         if (!VALID_ROLES.includes(role)) return json({ error: 'role must be one of: ' + VALID_ROLES.join(', ') }, 400);
         const auth = await requireAdmin(request, env, deviceId);
         if (auth.error) return auth.response;
-        await env.KEN_KV.put(`invite:${deviceId}:${email.toLowerCase()}`, JSON.stringify({ role, invitedBy: auth.user.email, createdAt: new Date().toISOString() }));
+        await env.KEN_KV.put(`invite:${deviceId}:${email.toLowerCase()}`, JSON.stringify({ role, invitedBy: auth.user.email, createdAt: new Date().toISOString() }), { expirationTtl: 604800 });
         await logAudit(env, deviceId, auth.user.email, 'Invited user', { email: email.toLowerCase(), role });
         // Send invitation email
         const inviterName = auth.user.name || auth.user.email;
@@ -379,8 +457,18 @@ export default {
     // ===== SETTINGS QUEUE (offline changes) =====
     if (request.method === 'POST' && path.match(/^\/api\/settings\/[\w-]+\/queue$/)) {
       const deviceId = path.split('/')[3];
+      // Require auth — settings queue can change device behaviour
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!hasPermission(userRole, 'edit:settings')) return json({ error: 'Insufficient permissions' }, 403);
       try {
         const body = await request.json();
+        // Whitelist allowed settings to prevent arbitrary injection
+        const ALLOWED_SETTINGS = ['dndEnabled', 'dndStart', 'dndEnd', 'nightlightEnabled', 'nightlightStart', 'nightlightEnd', 'nightlightBrightness', 'userName', 'fontSize', 'language', 'clockFormat', 'autoAnswer', 'ringVolume', 'callVolume', 'readVolume', 'autoRead', 'readDelay', 'quietEnabled', 'quietStart', 'quietEnd', 'urgentRing', 'urgentAnswer'];
+        if (body.setting && !ALLOWED_SETTINGS.includes(body.setting)) {
+          return json({ error: 'Setting not allowed: ' + body.setting }, 400);
+        }
         const queue = await env.KEN_KV.get(`queue:${deviceId}`, 'json') || [];
         queue.push({ id: crypto.randomUUID(), ...body, queuedAt: new Date().toISOString() });
         await env.KEN_KV.put(`queue:${deviceId}`, JSON.stringify(queue));
@@ -425,6 +513,8 @@ export default {
     // ===== CONTACT ENDPOINTS =====
     if (request.method === 'POST' && path.match(/^\/api\/contacts\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
+      const rl = await checkRateLimit(env, request, 'add-contact', 10, 60);
+      if (rl.limited) return json({ error: 'Too many requests. Try again later.' }, 429);
       return handleAddContact(request, env, deviceId);
     }
 
@@ -469,11 +559,11 @@ export default {
         }
         const message = {
           id: crypto.randomUUID(),
-          from: from.trim(),
-          text: text.trim(),
+          from: sanitize(from),
+          text: sanitize(text),
           sentAt: new Date().toISOString(),
           isReply: true,
-          to: (to || '').trim() || undefined,
+          to: sanitize(to || '') || undefined,
         };
         const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
         history.push(message);
@@ -740,9 +830,16 @@ export default {
       }
     }
 
-    // Get emergency contacts for a device (works for Pi offline cache)
+    // Get emergency contacts for a device (requires device key — Pi has it for offline cache)
     if (request.method === 'GET' && path.match(/^\/api\/contacts\/[\w-]+\/emergency$/)) {
       const deviceId = path.split('/')[3];
+      const emDeviceKey = request.headers.get('X-Ken-Device-Key');
+      const emStoredKey = emDeviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      const emIsDeviceAuthed = emDeviceKey && emStoredKey && emDeviceKey === emStoredKey;
+      if (!emIsDeviceAuthed) {
+        const auth = await requireAuth(request, env);
+        if (auth.error) return auth.response;
+      }
       const contacts = await env.KEN_KV.get(`contactlist:${deviceId}`, 'json') || [];
       const emergency = contacts.filter(c => c.isEmergencyContact);
       return json({ contacts: emergency });
@@ -798,7 +895,7 @@ export default {
       try {
         const body = await request.json();
         const existing = await env.KEN_KV.get(`medical:${deviceId}`, 'json') || { gp: {}, medications: [], allergies: [], conditions: [], careNotes: '' };
-        existing.careNotes = body.careNotes || '';
+        existing.careNotes = sanitize(body.careNotes || '');
         existing.careNotesUpdatedAt = new Date().toISOString();
         existing.careNotesUpdatedBy = auth.user.email;
         await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(existing));
@@ -862,16 +959,16 @@ export default {
         const existing = await env.KEN_KV.get(key, 'json') || {};
         const patient = {
           ...existing,
-          patientNumber: body.patientNumber !== undefined ? body.patientNumber : existing.patientNumber,
-          fullName: body.fullName !== undefined ? body.fullName : existing.fullName,
-          location: body.location !== undefined ? body.location : existing.location,
-          dob: body.dob !== undefined ? body.dob : existing.dob,
-          nextOfKin: body.nextOfKin !== undefined ? body.nextOfKin : existing.nextOfKin,
-          preferredHospital: body.preferredHospital !== undefined ? body.preferredHospital : existing.preferredHospital,
-          nhsNumber: body.nhsNumber !== undefined ? body.nhsNumber : existing.nhsNumber,
-          communicationNotes: body.communicationNotes !== undefined ? body.communicationNotes : existing.communicationNotes,
-          mobilityLevel: body.mobilityLevel !== undefined ? body.mobilityLevel : existing.mobilityLevel,
-          keySafeCode: body.keySafeCode !== undefined ? body.keySafeCode : existing.keySafeCode,
+          patientNumber: body.patientNumber !== undefined ? sanitize(body.patientNumber) : existing.patientNumber,
+          fullName: body.fullName !== undefined ? sanitize(body.fullName) : existing.fullName,
+          location: body.location !== undefined ? sanitize(body.location) : existing.location,
+          dob: body.dob !== undefined ? sanitize(body.dob) : existing.dob,
+          nextOfKin: body.nextOfKin !== undefined ? sanitize(body.nextOfKin) : existing.nextOfKin,
+          preferredHospital: body.preferredHospital !== undefined ? sanitize(body.preferredHospital) : existing.preferredHospital,
+          nhsNumber: body.nhsNumber !== undefined ? sanitize(body.nhsNumber) : existing.nhsNumber,
+          communicationNotes: body.communicationNotes !== undefined ? sanitize(body.communicationNotes) : existing.communicationNotes,
+          mobilityLevel: body.mobilityLevel !== undefined ? sanitize(body.mobilityLevel) : existing.mobilityLevel,
+          keySafeCode: body.keySafeCode !== undefined ? sanitize(body.keySafeCode) : existing.keySafeCode,
           updatedAt: new Date().toISOString(),
           updatedBy: auth.user.email,
         };
@@ -1109,6 +1206,7 @@ export default {
       try {
         const body = await request.json();
         if (!body.frame) return json({ error: 'frame required' }, 400);
+        if (body.frame.length > MAX_SCREENSHOT_BASE64 * 1.4) return json({ error: 'Frame too large (max 200KB)' }, 400);
         await env.KEN_KV.put(`screen:frame:${deviceId}`, body.frame, { expirationTtl: 30 });
         return json({ success: true });
       } catch {
@@ -1241,25 +1339,30 @@ export default {
     }
 
     // ===== HEARTBEAT =====
-    // Optimised: single KV write with combined data, TTL handles expiry
+    // Secured: if device already has a key, require it. First heartbeat generates key.
     if (request.method === 'POST' && path.match(/^\/api\/heartbeat\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
       const now = new Date().toISOString();
-      // Single write: heartbeat with lastSeen (TTL 600s = 10 min window with 5 min poll)
+      let deviceApiKey = await env.KEN_KV.get(`device-key:${deviceId}`);
+      // If device key exists, require it in the request (prevents impersonation)
+      if (deviceApiKey) {
+        const providedKey = request.headers.get('X-Ken-Device-Key');
+        if (!providedKey || providedKey !== deviceApiKey) {
+          return json({ error: 'Device authentication required' }, 401);
+        }
+      } else {
+        // First heartbeat — generate and return the device key
+        deviceApiKey = crypto.randomUUID() + '-' + crypto.randomUUID();
+        await env.KEN_KV.put(`device-key:${deviceId}`, deviceApiKey);
+      }
+      // Heartbeat with lastSeen (TTL 600s = 10 min window with 5 min poll)
       await env.KEN_KV.put(`heartbeat:${deviceId}`, JSON.stringify({ online: true, lastSeen: now }), { expirationTtl: 600 });
-      // Store non-expiring timestamp (for offline duration calc)
       await env.KEN_KV.put(`heartbeat-time:${deviceId}`, now);
-      // Register device only if not already known (check with a lightweight get)
+      // Register device only if not already known
       const devices = await env.KEN_KV.get('devices:all', 'json') || [];
       if (!devices.includes(deviceId)) {
         devices.push(deviceId);
         await env.KEN_KV.put('devices:all', JSON.stringify(devices));
-      }
-      // Generate device API key on first heartbeat (used for Pi auth)
-      let deviceApiKey = await env.KEN_KV.get(`device-key:${deviceId}`);
-      if (!deviceApiKey) {
-        deviceApiKey = crypto.randomUUID() + '-' + crypto.randomUUID();
-        await env.KEN_KV.put(`device-key:${deviceId}`, deviceApiKey);
       }
       return json({ success: true, deviceKey: deviceApiKey });
     }
@@ -1501,6 +1604,8 @@ export default {
         const body = await request.json();
         const { photo, caption } = body;
         if (!photo) return json({ error: 'photo required' }, 400);
+        // Validate photo size (base64 is ~33% larger than decoded)
+        if (photo.length > MAX_PHOTO_BASE64 * 1.4) return json({ error: 'Photo too large (max 500KB)' }, 400);
         const photos = await env.KEN_KV.get(`photos:${deviceId}`, 'json') || [];
         if (photos.length >= 20) return json({ error: 'Maximum 20 photos' }, 400);
         photos.push({
@@ -1543,6 +1648,8 @@ export default {
     // ===== FEEDBACK =====
     if (request.method === 'POST' && path.match(/^\/api\/feedback\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
+      const rl = await checkRateLimit(env, request, 'feedback', 5, 60);
+      if (rl.limited) return json({ error: 'Too many submissions. Try again later.' }, 429);
       try {
         const body = await request.json();
         // Attach authenticated user identity if available
@@ -1553,6 +1660,9 @@ export default {
             body.submittedBy = { email: user.email, name: user.name };
           }
         }
+        if (body.text) body.text = sanitize(body.text);
+        if (body.from) body.from = sanitize(body.from);
+        if (body.category) body.category = sanitize(body.category);
         if (!body.timestamp) body.timestamp = new Date().toISOString();
         // Ticket system: assign id, status, and empty replies array
         body.id = crypto.randomUUID();
@@ -1611,7 +1721,7 @@ export default {
           from: auth.user.name || auth.user.email,
           fromEmail: auth.user.email,
           role: userRole || 'user',
-          text: body.text,
+          text: sanitize(body.text),
           image: body.image || null,
           timestamp: new Date().toISOString()
         };
@@ -1694,6 +1804,7 @@ export default {
         const body = await request.json();
         const { from, type, media, duration, timestamp } = body;
         if (!from || !media) return json({ error: 'from and media required' }, 400);
+        if (media.length > MAX_VOICEMAIL_BASE64 * 1.4) return json({ error: 'Voicemail too large (max 5MB)' }, 400);
         const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
         voicemails.push({
           id: crypto.randomUUID(),
@@ -1863,9 +1974,9 @@ async function handleAddContact(request, env, deviceId) {
     const existing = await env.KEN_KV.get(`pending:${deviceId}`, 'json') || [];
     const contact = {
       id: crypto.randomUUID(),
-      name: name.trim(),
-      relationship: (relationship || '').trim(),
-      phoneNumber: (phoneNumber || '').trim(),
+      name: sanitize(name),
+      relationship: sanitize(relationship || ''),
+      phoneNumber: sanitize(phoneNumber || ''),
       photo: photo || '',
       submittedAt: new Date().toISOString(),
     };
@@ -1886,8 +1997,8 @@ async function handleSendMessage(request, env, deviceId) {
     }
     const message = {
       id: crypto.randomUUID(),
-      from: from.trim(),
-      text: text.trim(),
+      from: sanitize(from),
+      text: sanitize(text),
       sentAt: new Date().toISOString(),
       read: false,
     };
@@ -1915,7 +2026,7 @@ function json(data, status = 200) {
   const defaultCors = {
     'Access-Control-Allow-Origin': ALLOWED_ORIGINS[0],
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Ken-CSRF, X-Ken-Device-Key',
     'Access-Control-Allow-Credentials': 'true',
   };
   return new Response(JSON.stringify(data), {
@@ -3027,7 +3138,7 @@ function familyHTML(deviceId) {
         // Signal the Ken that we're calling
         await fetch('/api/calls/' + DEVICE_ID, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Ken-CSRF': '1' },
           body: JSON.stringify({ from: senderName })
         });
 
@@ -3116,7 +3227,7 @@ function familyHTML(deviceId) {
 
     function endFamilyCall() {
       // Signal end (clears both inbound and outbound signals)
-      fetch('/api/calls/' + DEVICE_ID + '/end', { method: 'POST' }).catch(() => {});
+      fetch('/api/calls/' + DEVICE_ID + '/end', { method: 'POST', headers: { 'X-Ken-CSRF': '1' } }).catch(() => {});
       if (familyCallObject) {
         familyCallObject.leave().catch(() => {});
         familyCallObject.destroy().catch(() => {});
@@ -3267,7 +3378,7 @@ function familyHTML(deviceId) {
         try {
           await fetch('/api/voicemail/' + DEVICE_ID, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-Ken-CSRF': '1' },
             body: JSON.stringify({
               from: vmCallerName,
               type: vmType,
@@ -3311,7 +3422,7 @@ function familyHTML(deviceId) {
       try {
         const resp = await fetch('/api/messages/' + DEVICE_ID, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Ken-CSRF': '1' },
           body: JSON.stringify({ from: senderName, text })
         });
         const data = await resp.json();
@@ -3419,7 +3530,7 @@ function familyHTML(deviceId) {
       try {
         await fetch('/api/settings/' + DEVICE_ID, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Ken-CSRF': '1' },
           body: JSON.stringify(deviceSettings)
         });
       } catch {}
@@ -3514,7 +3625,7 @@ function familyHTML(deviceId) {
       try {
         await fetch('/api/settings/' + DEVICE_ID + '/offline-alerts', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Ken-CSRF': '1' },
           body: JSON.stringify(offlineAlertSettings)
         });
         // Brief visual feedback
@@ -3555,7 +3666,7 @@ function familyHTML(deviceId) {
       try {
         await fetch('/api/reminders/' + DEVICE_ID, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Ken-CSRF': '1' },
           body: JSON.stringify({ time, text, repeat: 'daily' })
         });
         document.getElementById('reminderText').value = '';
@@ -3565,7 +3676,7 @@ function familyHTML(deviceId) {
 
     async function deleteReminder(id) {
       try {
-        await fetch('/api/reminders/' + DEVICE_ID + '/' + id, { method: 'DELETE' });
+        await fetch('/api/reminders/' + DEVICE_ID + '/' + id, { method: 'DELETE', headers: { 'X-Ken-CSRF': '1' } });
         loadReminders();
       } catch {}
     }
@@ -3610,7 +3721,7 @@ function familyHTML(deviceId) {
           try {
             await fetch('/api/photos/' + DEVICE_ID, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', 'X-Ken-CSRF': '1' },
               body: JSON.stringify({ photo: dataUrl })
             });
             loadPhotos();
@@ -3623,7 +3734,7 @@ function familyHTML(deviceId) {
 
     async function deletePhoto(id) {
       try {
-        await fetch('/api/photos/' + DEVICE_ID + '/' + id, { method: 'DELETE' });
+        await fetch('/api/photos/' + DEVICE_ID + '/' + id, { method: 'DELETE', headers: { 'X-Ken-CSRF': '1' } });
         loadPhotos();
       } catch {}
     }
