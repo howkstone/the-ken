@@ -1531,31 +1531,68 @@
       flex: 1;
       display: flex;
       flex-direction: column;
+      align-items: center;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .msg-view-photo {
+      width: 150px;
+      height: 150px;
+      border-radius: 50%;
+      overflow: hidden;
+      margin-bottom: 16px;
+      border: 4px solid var(--gold);
+      flex-shrink: 0;
+    }
+
+    .msg-view-photo img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .msg-view-photo-fallback {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(196, 169, 98, 0.15);
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 64px;
+      color: var(--gold);
+      font-weight: 400;
     }
 
     .msg-view-from {
       font-family: 'Cormorant Garamond', serif;
       font-weight: 400;
-      font-size: var(--header-lg);
+      font-size: 40px;
       color: var(--ink);
-      margin-bottom: 8px;
+      margin-bottom: 4px;
+      text-align: center;
     }
 
     .msg-view-time {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
-      font-size: var(--body);
+      font-weight: 500;
+      font-size: 24px;
       color: var(--mid);
-      margin-bottom: 32px;
+      margin-bottom: 24px;
+      text-align: center;
     }
 
     .msg-view-text {
       font-family: 'Jost', sans-serif;
       font-weight: 400;
-      font-size: var(--header);
+      font-size: 32px;
       color: var(--ink);
       line-height: 1.5;
       flex: 1;
+      max-width: 520px;
+      width: 100%;
+      text-align: left;
     }
 
     .msg-view-actions {
@@ -1563,6 +1600,7 @@
       gap: 16px;
       padding: 24px;
       padding-bottom: 32px;
+      width: 100%;
     }
 
     .msg-view-actions button { flex: 1; }
@@ -1575,6 +1613,8 @@
       background: var(--gold);
       border: none;
       border-radius: 16px;
+      min-width: 200px;
+      min-height: 80px;
       padding: 24px;
       cursor: pointer;
       user-select: none;
@@ -2840,6 +2880,9 @@
       <div class="settings-heading">Message</div>
     </div>
     <div class="msg-view-body">
+      <div class="msg-view-photo" id="msgViewPhoto">
+        <div class="msg-view-photo-fallback">S</div>
+      </div>
       <div class="msg-view-from" id="msgViewFrom">Sarah</div>
       <div class="msg-view-time" id="msgViewTime">Today at 14:23</div>
       <div class="msg-view-text" id="msgViewText">Hi Mum!</div>
@@ -3408,6 +3451,12 @@
       }
     };
 
+    // Preload speech synthesis voices (they load asynchronously)
+    if (window.speechSynthesis) {
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.onvoiceschanged = function() { window.speechSynthesis.getVoices(); };
+    }
+
     // Translations (subset - expand as needed)
     const STRINGS = {
       en: {
@@ -3727,21 +3776,42 @@
       if (ringtoneInterval) { clearInterval(ringtoneInterval); ringtoneInterval = null; }
     }
 
-    // Message notification: single soft ding
+    // Message notification: gentle two-note chime (ding-dong)
     function playMessageTone() {
+      // Don't play if screen is idle/asleep
+      if (wasIdle || slideshowActive || nightlightActive) return;
+      // Don't play if a call is active
+      const callingActive = document.getElementById('callingScreen').classList.contains('active');
+      const callActive = document.getElementById('callScreen').classList.contains('active');
+      const incomingActive = document.getElementById('incomingScreen').classList.contains('active');
+      if (callingActive || callActive || incomingActive) return;
+
       const ctx = getAudioCtx();
       const readVol = parseInt(localStorage.getItem('ken-read-volume') || '8') / 10;
-      const gain = ctx.createGain();
-      gain.connect(ctx.destination);
-      gain.gain.setValueAtTime(readVol * 0.25, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8);
 
-      const osc = ctx.createOscillator();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, ctx.currentTime); // A5
-      osc.connect(gain);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.5);
+      // First note — gentle high ding (C6)
+      const gain1 = ctx.createGain();
+      gain1.connect(ctx.destination);
+      gain1.gain.setValueAtTime(readVol * 0.2, ctx.currentTime);
+      gain1.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+      const osc1 = ctx.createOscillator();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(1046.5, ctx.currentTime); // C6
+      osc1.connect(gain1);
+      osc1.start(ctx.currentTime);
+      osc1.stop(ctx.currentTime + 0.4);
+
+      // Second note — softer lower tone (E5)
+      const gain2 = ctx.createGain();
+      gain2.connect(ctx.destination);
+      gain2.gain.setValueAtTime(readVol * 0.15, ctx.currentTime + 0.25);
+      gain2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.9);
+      const osc2 = ctx.createOscillator();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(659.25, ctx.currentTime + 0.25); // E5
+      osc2.connect(gain2);
+      osc2.start(ctx.currentTime + 0.25);
+      osc2.stop(ctx.currentTime + 0.7);
     }
 
     // ===== STATE =====
@@ -5015,6 +5085,15 @@
         if (!msg) return;
         currentMessage = msg;
 
+        // Set sender photo
+        const photoEl = document.getElementById('msgViewPhoto');
+        const senderContact = allContacts.find(c => c.name === msg.from);
+        if (senderContact && senderContact.photo) {
+          photoEl.innerHTML = '<img src="' + senderContact.photo + '" alt="' + escHtml(msg.from) + '" onerror="this.parentNode.innerHTML=\'<div class=msg-view-photo-fallback>' + escHtml(msg.from).charAt(0) + '</div>\'" />';
+        } else {
+          photoEl.innerHTML = '<div class="msg-view-photo-fallback">' + (msg.from ? escHtml(msg.from).charAt(0) : '?') + '</div>';
+        }
+
         document.getElementById('msgViewFrom').textContent = msg.from;
         document.getElementById('msgViewTime').textContent = formatMessageTime(new Date(msg.sentAt));
         document.getElementById('msgViewText').textContent = msg.text;
@@ -5087,15 +5166,23 @@
       showDeleteConfirm();
     }
 
-    function readMessageAloud() {
-      if (!currentMessage) return;
+    function readAloud(text) {
       window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(currentMessage.from + ' says: ' + currentMessage.text);
+      const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'en-GB';
-      utterance.rate = 0.9;
+      utterance.rate = 0.85;
       const readVol = parseInt(localStorage.getItem('ken-read-volume') || '8');
       utterance.volume = readVol / 10;
+      // Select the first available English voice
+      const voices = window.speechSynthesis.getVoices();
+      const engVoice = voices.find(v => v.lang.startsWith('en'));
+      if (engVoice) utterance.voice = engVoice;
       window.speechSynthesis.speak(utterance);
+    }
+
+    function readMessageAloud() {
+      if (!currentMessage) return;
+      readAloud(currentMessage.from + ' says: ' + currentMessage.text);
     }
 
     function toggleDeviceReactPicker() {
@@ -5143,12 +5230,7 @@
       if (!autoRead) return;
       const delay = parseInt(localStorage.getItem('ken-read-delay') || '3') * 1000;
       setTimeout(() => {
-        const utterance = new SpeechSynthesisUtterance('Message from ' + msg.from + ': ' + msg.text);
-        utterance.lang = 'en-GB';
-        utterance.rate = 0.9;
-        const readVol = parseInt(localStorage.getItem('ken-read-volume') || '8');
-        utterance.volume = readVol / 10;
-        window.speechSynthesis.speak(utterance);
+        readAloud('Message from ' + msg.from + ': ' + msg.text);
       }, delay);
     }
 
@@ -5244,13 +5326,7 @@
 
     function readNotifAloud() {
       if (!notifMessage) return;
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(notifMessage.from + ' says: ' + notifMessage.text);
-      utterance.lang = 'en-GB';
-      utterance.rate = 0.9;
-      const readVol = parseInt(localStorage.getItem('ken-read-volume') || '8');
-      utterance.volume = readVol / 10;
-      window.speechSynthesis.speak(utterance);
+      readAloud(notifMessage.from + ' says: ' + notifMessage.text);
     }
 
     function replyToNotif() {
