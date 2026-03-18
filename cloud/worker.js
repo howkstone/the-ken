@@ -965,6 +965,37 @@ export default {
       return json({ messages: filtered, readReceiptsEnabled: readReceiptsPref ? readReceiptsPref.enabled : true });
     }
 
+    // ===== TYPING INDICATOR: POST (someone is typing) =====
+    if (request.method === 'POST' && path.match(/^\/api\/messages\/[\w-]+\/typing$/)) {
+      const deviceId = path.split('/')[3];
+      try {
+        const body = await request.json();
+        const name = sanitize(body.name || 'Someone');
+        // Determine who is typing
+        const session = await getSession(request, env);
+        const email = session ? session.email : 'device';
+        await env.KEN_KV.put(`typing:${deviceId}`, JSON.stringify({
+          name,
+          email,
+          timestamp: new Date().toISOString()
+        }), { expirationTtl: 15 });
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== TYPING INDICATOR: GET (check if someone is typing) =====
+    if (request.method === 'GET' && path.match(/^\/api\/messages\/[\w-]+\/typing$/)) {
+      const deviceId = path.split('/')[3];
+      const typing = await env.KEN_KV.get(`typing:${deviceId}`, 'json');
+      if (typing && typing.timestamp) {
+        const age = Date.now() - new Date(typing.timestamp).getTime();
+        if (age < 15000) {
+          return json({ typing: true, name: typing.name });
+        }
+      }
+      return json({ typing: false });
+    }
+
     // ===== DELETE MESSAGE (from history) =====
     if (request.method === 'DELETE' && path.match(/^\/api\/messages\/[\w-]+\/[\w-]+$/)) {
       const parts = path.split('/');
