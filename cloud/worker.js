@@ -2,6 +2,7 @@
 // Handles contacts, messaging, family interface, auth, permissions & audit
 
 const ALLOWED_ORIGINS = ['https://theken.uk', 'https://www.theken.uk', 'https://ken-api.the-ken.workers.dev', 'https://api.theken.uk'];
+let _currentCorsHeaders = null;
 
 // ===== SECURITY: RATE LIMITING =====
 // IP-based rate limiting using KV with TTL
@@ -234,6 +235,7 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const CORS_HEADERS = getCorsHeaders(request);
+    _currentCorsHeaders = CORS_HEADERS;
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: CORS_HEADERS });
@@ -280,7 +282,7 @@ export default {
       if (!isPublicEndpoint) {
         const deviceKey = request.headers.get('X-Ken-Device-Key');
         const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${scopedDeviceId}`) : null;
-        const isDeviceAuthed = deviceKey && storedKey && deviceKey === storedKey;
+        const isDeviceAuthed = deviceKey && storedKey && timingSafeEqual(deviceKey, storedKey);
         const session = await getSession(request, env);
         if (!isDeviceAuthed && !session) {
           return json({ error: 'Authentication required' }, 401);
@@ -347,8 +349,15 @@ export default {
         if (!email || !password) return json({ error: 'Email and password are required' }, 400);
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (!user) return json({ error: 'Invalid email or password' }, 401);
-        const { hash } = await hashPassword(password, user.passwordSalt || 'ken-salt-2026');
-        if (!timingSafeEqual(hash, user.passwordHash)) return json({ error: 'Invalid email or password' }, 401);
+        const pwResult = await verifyPassword(password, user.passwordHash, user.passwordSalt || 'ken-salt-2026');
+        if (!pwResult.valid) return json({ error: 'Invalid email or password' }, 401);
+        // Rehash with PBKDF2 if still using legacy SHA-256
+        if (pwResult.needsRehash) {
+          const { hash: newHash, salt: newSalt } = await hashPassword(password, user.passwordSalt || 'ken-salt-2026');
+          user.passwordHash = newHash;
+          user.passwordSalt = newSalt;
+          await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+        }
         // Check MFA
         if (user.mfaEnabled && user.mfaSecret) {
           if (!totpCode) {
@@ -357,11 +366,12 @@ export default {
           // Try TOTP first, then backup codes
           const validTotp = await verifyTOTP(user.mfaSecret, totpCode);
           if (!validTotp) {
-            // Check backup codes (stored as hashes)
+            // Check backup codes (stored as hashes — try PBKDF2 then legacy)
             let backupIdx = -1;
             const { hash: codeHash } = await hashPassword(totpCode, 'mfa-backup-salt');
+            const { hash: legacyCodeHash } = await hashPasswordLegacy(totpCode, 'mfa-backup-salt');
             for (let i = 0; i < (user.mfaBackupCodes || []).length; i++) {
-              if (timingSafeEqual(user.mfaBackupCodes[i], codeHash)) { backupIdx = i; break; }
+              if (timingSafeEqual(user.mfaBackupCodes[i], codeHash) || timingSafeEqual(user.mfaBackupCodes[i], legacyCodeHash)) { backupIdx = i; break; }
             }
             if (backupIdx === -1) return json({ error: 'Invalid MFA code' }, 401);
             // Consume the backup code
@@ -433,8 +443,13 @@ export default {
         if (!email || !password) return json({ error: 'Email and password required' }, 400);
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (!user) return json({ error: 'Invalid credentials' }, 401);
-        const { hash } = await hashPassword(password, user.passwordSalt || 'ken-salt-2026');
-        if (!timingSafeEqual(hash, user.passwordHash)) return json({ error: 'Invalid password' }, 401);
+        const pwResult = await verifyPassword(password, user.passwordHash, user.passwordSalt || 'ken-salt-2026');
+        if (!pwResult.valid) return json({ error: 'Invalid password' }, 401);
+        if (pwResult.needsRehash) {
+          const { hash: newHash, salt: newSalt } = await hashPassword(password, user.passwordSalt || 'ken-salt-2026');
+          user.passwordHash = newHash;
+          user.passwordSalt = newSalt;
+        }
         user.mfaEnabled = false;
         delete user.mfaSecret;
         delete user.mfaPendingSecret;
@@ -476,7 +491,7 @@ export default {
           '<a href="https://theken.uk/portal/?reset=' + resetToken + '" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Reset Password</a>' +
           '<p style="color:#6B6459;font-size:13px;margin-top:24px;">If you didn\'t request this, you can safely ignore this email.</p>'
         );
-        return json({ success: true, resetToken: env.RESEND_API_KEY ? undefined : resetToken });
+        return json({ success: true });
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
@@ -498,6 +513,16 @@ export default {
         delete user.resetToken;
         await env.KEN_KV.put(`user:${reset.email}`, JSON.stringify(user));
         await env.KEN_KV.delete(`reset:${token}`);
+        // Invalidate all existing sessions for this user
+        try {
+          const sessionList = await env.KEN_KV.list({ prefix: 'session:' });
+          for (const key of sessionList.keys) {
+            const sess = await env.KEN_KV.get(key.name, 'json');
+            if (sess && sess.email && sess.email.toLowerCase() === reset.email.toLowerCase()) {
+              await env.KEN_KV.delete(key.name);
+            }
+          }
+        } catch { /* best-effort session cleanup */ }
         const deviceIds = Object.keys(user.devices || {});
         if (deviceIds[0]) await logAudit(env, deviceIds[0], reset.email, 'Password reset', {});
         return json({ success: true });
@@ -669,6 +694,12 @@ export default {
 
     if (request.method === 'POST' && path.match(/^\/api\/settings\/[\w-]+\/queue\/ack$/)) {
       const deviceId = path.split('/')[3];
+      // SECURITY: require device key auth (only the Pi should ack its own queue)
+      const ackDevKey = request.headers.get('X-Ken-Device-Key');
+      const ackStoredKey = ackDevKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      if (!(ackDevKey && ackStoredKey && ackDevKey === ackStoredKey)) {
+        return json({ error: 'Device authentication required' }, 401);
+      }
       await env.KEN_KV.delete(`queue:${deviceId}`);
       return json({ success: true });
     }
@@ -830,7 +861,7 @@ export default {
         // Determine who is deleting
         const deviceKey = request.headers.get('X-Ken-Device-Key');
         const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-        const isDevice = deviceKey && storedKey && deviceKey === storedKey;
+        const isDevice = deviceKey && storedKey && timingSafeEqual(deviceKey, storedKey);
         const session = await getSession(request, env);
 
         if (mode === 'for-everyone') {
@@ -902,7 +933,7 @@ export default {
       // Filter deleted messages based on viewer
       const deviceKey = request.headers.get('X-Ken-Device-Key');
       const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      const isDevice = deviceKey && storedKey && deviceKey === storedKey;
+      const isDevice = deviceKey && storedKey && timingSafeEqual(deviceKey, storedKey);
       const session = await getSession(request, env);
       const filtered = history.filter(m => {
         if (m.deletedForEveryone) return false;
@@ -987,6 +1018,13 @@ export default {
     // Family member initiates a call (signals the Ken)
     if (request.method === 'POST' && path.match(/^\/api\/calls\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
+      // SECURITY: require device key or authenticated session
+      const callDevKey = request.headers.get('X-Ken-Device-Key');
+      const callStoredKey = callDevKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      if (!(callDevKey && callStoredKey && callDevKey === callStoredKey)) {
+        const auth = await requireAuth(request, env);
+        if (auth.error) return auth.response;
+      }
       try {
         const body = await request.json();
         const { from } = body;
@@ -1851,6 +1889,13 @@ export default {
     // ===== DEVICE INFO =====
     if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
+      // SECURITY: require device key or admin/carer/hq session
+      const devInfoKey = request.headers.get('X-Ken-Device-Key');
+      const devInfoStored = devInfoKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      if (!(devInfoKey && devInfoStored && devInfoKey === devInfoStored)) {
+        const auth = await requireAdmin(request, env, deviceId);
+        if (auth.error) return auth.response;
+      }
       try {
         const body = await request.json();
         await env.KEN_KV.put(`device:${deviceId}`, JSON.stringify(body));
@@ -1877,7 +1922,7 @@ export default {
         const deviceKey = await env.KEN_KV.get(`device-key:${oldId}`);
         if (!deviceKey) return json({ error: 'Unknown device' }, 404);
         const providedKey = request.headers.get('X-Ken-Device-Key');
-        if (!providedKey || providedKey !== deviceKey) return json({ error: 'Device authentication required' }, 401);
+        if (!providedKey || !timingSafeEqual(providedKey, deviceKey)) return json({ error: 'Device authentication required' }, 401);
         // Check new ID isn't taken
         const existingNew = await env.KEN_KV.get(`device:${newId}`, 'json');
         if (existingNew) return json({ error: 'New device ID already in use' }, 409);
@@ -1927,7 +1972,7 @@ export default {
       // If device key exists, require it in the request (prevents impersonation)
       if (deviceApiKey) {
         const providedKey = request.headers.get('X-Ken-Device-Key');
-        if (!providedKey || providedKey !== deviceApiKey) {
+        if (!providedKey || !timingSafeEqual(providedKey, deviceApiKey)) {
           return json({ error: 'Device authentication required' }, 401);
         }
       } else {
@@ -2350,6 +2395,13 @@ export default {
     // Ken signals "send to voicemail"
     if (request.method === 'POST' && path.match(/^\/api\/calls\/[\w-]+\/voicemail$/)) {
       const deviceId = path.split('/')[3];
+      // SECURITY: require device key or authenticated session
+      const vmReqKey = request.headers.get('X-Ken-Device-Key');
+      const vmReqStored = vmReqKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      if (!(vmReqKey && vmReqStored && vmReqKey === vmReqStored)) {
+        const auth = await requireAuth(request, env);
+        if (auth.error) return auth.response;
+      }
       try {
         const body = await request.json();
         const { from } = body;
@@ -2370,6 +2422,15 @@ export default {
     // Store a voicemail recording
     if (request.method === 'POST' && path.match(/^\/api\/voicemail\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
+      // SECURITY: require device key or authenticated session with send:voicemail permission
+      const vmStoreKey = request.headers.get('X-Ken-Device-Key');
+      const vmStoreStored = vmStoreKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      if (!(vmStoreKey && vmStoreStored && vmStoreKey === vmStoreStored)) {
+        const auth = await requireAuth(request, env);
+        if (auth.error) return auth.response;
+        const vmRole = getUserRole(auth.user, deviceId);
+        if (!hasPermission(vmRole, 'send:voicemail')) return json({ error: 'Insufficient permissions' }, 403);
+      }
       try {
         const body = await request.json();
         const { from, type, media, duration, timestamp } = body;
@@ -2586,7 +2647,7 @@ export default {
         // Determine reactor identity
         const deviceKey = request.headers.get('X-Ken-Device-Key');
         const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-        const isDevice = deviceKey && storedKey && deviceKey === storedKey;
+        const isDevice = deviceKey && storedKey && timingSafeEqual(deviceKey, storedKey);
         const session = await getSession(request, env);
         let reactorName, reactorId;
         if (isDevice) {
@@ -3656,17 +3717,28 @@ export default {
         if (keyParts.length >= 2) {
           const scopedDeviceId = keyParts[1];
           const storedKey = await env.KEN_KV.get(`device-key:${scopedDeviceId}`);
-          isDeviceAuthed = storedKey && deviceKey === storedKey;
+          isDeviceAuthed = storedKey && timingSafeEqual(deviceKey, storedKey);
         }
       }
       if (!session && !isDeviceAuthed) {
         return json({ error: 'Not authenticated' }, 401);
       }
+      // Device-level access control: verify user has access to the device in the R2 path
+      const r2Key = path.slice('/api/media/'.length);
+      if (!r2Key) return json({ error: 'Missing media key' }, 400);
+      const r2Parts = r2Key.split('/');
+      if (r2Parts.length >= 2) {
+        const mediaDeviceId = r2Parts[1];
+        if (session) {
+          const mediaUser = await env.KEN_KV.get(`user:${session.email}`, 'json');
+          if (!mediaUser || !mediaUser.devices || !mediaUser.devices[mediaDeviceId]) {
+            return json({ error: 'Access denied to this device media' }, 403);
+          }
+        }
+      }
       if (!env.KEN_MEDIA) {
         return json({ error: 'Media storage not configured' }, 503);
       }
-      const r2Key = path.slice('/api/media/'.length);
-      if (!r2Key) return json({ error: 'Missing media key' }, 400);
       const object = await env.KEN_MEDIA.get(r2Key);
       if (!object) return json({ error: 'Media not found' }, 404);
       // Determine content type from R2 metadata or file extension
@@ -4267,9 +4339,8 @@ async function handleSendMessage(request, env, deviceId) {
   }
 }
 
-function json(data, status = 200) {
-  // Default CORS headers for helper functions called outside of fetch context
-  const defaultCors = {
+function json(data, status = 200, corsHeaders = null) {
+  const cors = corsHeaders || _currentCorsHeaders || {
     'Access-Control-Allow-Origin': ALLOWED_ORIGINS[0],
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-Ken-CSRF, X-Ken-Device-Key',
@@ -4277,7 +4348,7 @@ function json(data, status = 200) {
   };
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', ...defaultCors },
+    headers: { 'Content-Type': 'application/json', ...cors },
   });
 }
 
@@ -6290,10 +6361,29 @@ function timingSafeEqual(a, b) {
 async function hashPassword(password, salt) {
   if (!salt) salt = crypto.randomUUID();
   const encoder = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: encoder.encode(salt), iterations: 600000, hash: 'SHA-256' }, keyMaterial, 256);
+  const hash = btoa(String.fromCharCode(...new Uint8Array(bits)));
+  return { hash, salt };
+}
+
+async function hashPasswordLegacy(password, salt) {
+  if (!salt) salt = crypto.randomUUID();
+  const encoder = new TextEncoder();
   const data = encoder.encode(password + salt);
-  const hash = await crypto.subtle.digest('SHA-256', data);
-  const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const hashHex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
   return { hash: hashHex, salt };
+}
+
+async function verifyPassword(password, storedHash, salt) {
+  // Try PBKDF2 first
+  const { hash: pbkdf2Hash } = await hashPassword(password, salt);
+  if (timingSafeEqual(pbkdf2Hash, storedHash)) return { valid: true, needsRehash: false };
+  // Fall back to legacy SHA-256
+  const { hash: legacyHash } = await hashPasswordLegacy(password, salt);
+  if (timingSafeEqual(legacyHash, storedHash)) return { valid: true, needsRehash: true };
+  return { valid: false, needsRehash: false };
 }
 
 async function getSession(request, env) {
