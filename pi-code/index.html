@@ -70,7 +70,7 @@
 
     .setup-subtitle {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: 24px;
       color: var(--mid);
       text-align: center;
@@ -161,7 +161,7 @@
 
     .font-option .label {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       color: var(--mid);
     }
 
@@ -205,7 +205,7 @@
     }
 
     .choice-btn .choice-desc {
-      font-weight: 300;
+      font-weight: 500;
       font-size: 20px;
       color: var(--mid);
       margin-top: 8px;
@@ -234,7 +234,7 @@
 
     .input-hint {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: 18px;
       color: var(--mid);
       margin-bottom: 16px;
@@ -247,24 +247,25 @@
       flex-direction: column;
       gap: 8px;
       margin-top: auto;
+      overflow-x: auto;
     }
 
     .kb-row {
       display: flex;
       justify-content: center;
-      gap: 6px;
+      gap: 8px;
     }
 
     .kb-key {
       font-family: 'Jost', sans-serif;
-      font-weight: 400;
-      font-size: 24px;
+      font-weight: 600;
+      font-size: 20px;
       color: var(--ink);
       background: var(--cream);
       border: 2px solid rgba(196, 169, 98, 0.25);
       border-radius: 10px;
-      width: 52px;
-      height: 56px;
+      min-width: 64px;
+      min-height: 64px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -693,7 +694,7 @@
 
     .calling-status {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: var(--body-lg);
       color: var(--mid);
       margin-bottom: 60px;
@@ -807,7 +808,7 @@
       top: 16px;
       right: 16px;
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: var(--body);
       color: rgba(255, 255, 255, 0.7);
       background: rgba(0, 0, 0, 0.4);
@@ -832,7 +833,7 @@
     .waiting-message .status {
       font-family: 'Jost', sans-serif;
       font-size: var(--body-lg);
-      font-weight: 300;
+      font-weight: 500;
       color: rgba(255, 255, 255, 0.7);
     }
 
@@ -1057,7 +1058,7 @@
 
     .incoming-status {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: var(--body-lg);
       color: var(--mid);
       margin-bottom: 16px;
@@ -1173,7 +1174,7 @@
 
     .manage-relationship {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: var(--body);
       color: var(--mid);
       text-align: center;
@@ -1255,7 +1256,7 @@
 
     .card-relationship {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: var(--body-lg);
       color: var(--mid);
       margin-bottom: 24px;
@@ -1287,7 +1288,7 @@
 
     .card-detail-label {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: var(--body);
       color: var(--mid);
     }
@@ -1406,7 +1407,7 @@
 
     .msg-time {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: var(--date-size);
       color: var(--mid);
     }
@@ -1415,7 +1416,7 @@
       text-align: center;
       padding: 60px 24px;
       color: var(--mid);
-      font-weight: 300;
+      font-weight: 500;
       font-size: var(--body);
     }
 
@@ -1466,7 +1467,7 @@
 
     .msg-thread-time {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: 16px;
       color: var(--mid);
       margin-top: 4px;
@@ -1495,7 +1496,7 @@
     }
     .medical-empty {
       color: var(--mid);
-      font-weight: 300;
+      font-weight: 500;
       font-size: var(--body);
       padding: 8px 0;
     }
@@ -1538,7 +1539,7 @@
       text-align: center;
       font-size: 16px;
       color: var(--mid);
-      font-weight: 300;
+      font-weight: 500;
       padding: 16px 0;
     }
 
@@ -1955,28 +1956,29 @@
       width: 100%;
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 8px;
       padding: 0 4px;
       margin-top: auto;
       padding-bottom: 8px;
+      overflow-x: auto;
     }
 
     .reply-kb-row {
       display: flex;
       justify-content: center;
-      gap: 3px;
+      gap: 8px;
     }
 
     .reply-kb-key {
       font-family: 'Jost', sans-serif;
-      font-weight: 500;
+      font-weight: 600;
       font-size: 20px;
       color: var(--ink);
       background: var(--cream);
       border: 2px solid rgba(196, 169, 98, 0.25);
       border-radius: 8px;
-      width: 48px;
-      height: 50px;
+      min-width: 64px;
+      min-height: 64px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -1991,20 +1993,20 @@
     }
 
     .reply-kb-key.wide {
-      width: 68px;
-      font-size: 15px;
+      min-width: 88px;
+      font-size: 17px;
     }
 
     .reply-kb-key.space-key {
-      width: 170px;
+      min-width: 170px;
     }
 
     .reply-kb-key.send-key {
       background: var(--gold);
       color: var(--warm-white);
       border-color: var(--gold);
-      width: 96px;
-      font-size: 18px;
+      min-width: 96px;
+      font-size: 20px;
     }
 
     .reply-kb-key.send-key:active {
@@ -2015,6 +2017,204 @@
       background: rgba(196, 169, 98, 0.3);
       color: var(--mid);
       pointer-events: none;
+    }
+
+    /* ===== CALL HISTORY SCREEN ===== */
+    .call-history-list {
+      flex: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 8px 16px 24px;
+    }
+    .call-history-item {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 16px 12px;
+      border-bottom: 2px solid var(--cream);
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .call-history-item:active {
+      background: rgba(196, 169, 98, 0.1);
+    }
+    .call-history-photo {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      overflow: hidden;
+      flex-shrink: 0;
+      background: var(--cream);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Jost', sans-serif;
+      font-weight: 500;
+      font-size: 22px;
+      color: var(--gold);
+    }
+    .call-history-photo img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .call-history-info {
+      flex: 1;
+      min-width: 0;
+    }
+    .call-history-name {
+      font-family: 'Jost', sans-serif;
+      font-weight: 500;
+      font-size: 22px;
+      color: var(--ink);
+    }
+    .call-history-meta {
+      font-family: 'Jost', sans-serif;
+      font-weight: 400;
+      font-size: 16px;
+      color: var(--mid);
+      margin-top: 2px;
+    }
+    .call-history-direction {
+      font-weight: 500;
+    }
+    .call-history-direction.incoming { color: var(--gold); }
+    .call-history-direction.outgoing { color: var(--mid); }
+    .call-history-direction.missed { color: #C46262; }
+    .call-history-empty {
+      text-align: center;
+      padding: 64px 24px;
+      font-family: 'Jost', sans-serif;
+      font-weight: 400;
+      font-size: 22px;
+      color: var(--mid);
+    }
+
+    /* ===== VOICE-TO-TEXT BUTTON ===== */
+    .speak-btn {
+      width: 100%;
+      height: 64px;
+      background: var(--gold);
+      color: var(--warm-white);
+      border: none;
+      border-radius: 14px;
+      font-family: 'Jost', sans-serif;
+      font-weight: 500;
+      font-size: 22px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .speak-btn:active {
+      background: var(--gold-light);
+      transform: scale(0.98);
+    }
+    .speak-btn.listening {
+      background: #C46262;
+      animation: speakPulse 1.2s ease-in-out infinite;
+    }
+    @keyframes speakPulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.03); opacity: 0.85; }
+    }
+    .speak-btn svg {
+      width: 28px;
+      height: 28px;
+      fill: var(--warm-white);
+    }
+
+    /* ===== MESSAGE PHOTO ===== */
+    .msg-view-image {
+      width: 100%;
+      max-height: 400px;
+      border-radius: 12px;
+      margin-top: 16px;
+      object-fit: contain;
+      cursor: pointer;
+      border: 2px solid var(--cream);
+    }
+    .msg-thread-image {
+      max-width: 200px;
+      max-height: 160px;
+      border-radius: 8px;
+      margin-top: 6px;
+      object-fit: cover;
+      border: 2px solid var(--cream);
+    }
+    .photo-fullscreen-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.92);
+      z-index: 900;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      cursor: pointer;
+    }
+    .photo-fullscreen-overlay.active {
+      display: flex;
+    }
+    .photo-fullscreen-overlay img {
+      max-width: 95%;
+      max-height: 85%;
+      object-fit: contain;
+      border-radius: 8px;
+    }
+    .photo-fullscreen-close {
+      position: absolute;
+      top: 24px;
+      right: 24px;
+      width: 56px;
+      height: 56px;
+      background: rgba(255,255,255,0.15);
+      border: none;
+      border-radius: 50%;
+      color: #fff;
+      font-size: 28px;
+      font-family: 'Jost', sans-serif;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ===== MISSED CALL BANNER BUTTONS ===== */
+    .missed-call-buttons {
+      display: flex;
+      gap: 12px;
+      margin-top: 10px;
+      justify-content: center;
+    }
+    .missed-call-btn {
+      font-family: 'Jost', sans-serif;
+      font-weight: 500;
+      font-size: 20px;
+      border: none;
+      border-radius: 12px;
+      padding: 12px 28px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      min-height: 48px;
+    }
+    .missed-call-btn.callback {
+      background: var(--gold);
+      color: var(--warm-white);
+    }
+    .missed-call-btn.callback:active {
+      background: var(--gold-light);
+    }
+    .missed-call-btn.dismiss {
+      background: rgba(107, 100, 89, 0.15);
+      color: var(--mid);
+    }
+    .missed-call-btn.dismiss:active {
+      background: rgba(107, 100, 89, 0.25);
     }
 
     /* ===== QR ADD SCREEN ===== */
@@ -2047,7 +2247,7 @@
 
     .qr-url {
       font-family: 'Jost', sans-serif;
-      font-weight: 300;
+      font-weight: 500;
       font-size: var(--body);
       color: var(--mid);
       text-align: center;
@@ -2468,9 +2668,12 @@
       <div class="date" id="date" style="font-size:22px;font-weight:500;margin-top:2px;">17 March 2026</div>
     </div>
     <!-- Missed call banner (shown until acknowledged) -->
-    <div id="missedCallBanner" style="display:none;background:rgba(196,169,98,0.15);border:3px solid var(--gold);border-radius:16px;padding:16px 20px;margin:0 20px 12px;cursor:pointer;" onclick="dismissMissedCall()">
+    <div id="missedCallBanner" style="display:none;background:rgba(196,169,98,0.15);border:3px solid var(--gold);border-radius:16px;padding:16px 20px;margin:0 20px 12px;">
       <div style="font-family:'Jost',sans-serif;font-weight:600;font-size:24px;color:var(--gold);text-align:center;" id="missedCallText">Sarah called at 2:15 PM</div>
-      <div style="font-family:'Jost',sans-serif;font-weight:500;font-size:18px;color:var(--mid);text-align:center;margin-top:4px;">Tap to dismiss</div>
+      <div class="missed-call-buttons">
+        <button class="missed-call-btn callback" onclick="callBackMissed()">Call Back</button>
+        <button class="missed-call-btn dismiss" onclick="dismissMissedCall()">Dismiss</button>
+      </div>
     </div>
 
     <div class="call-section">
@@ -2507,6 +2710,7 @@
     <button class="menu-item" onclick="menuNavTo('messages')">
       Messages<span class="nav-badge menu-badge" id="menuMsgBadge"></span>
     </button>
+    <button class="menu-item" onclick="menuNavTo('callHistory')">Recent Calls</button>
     <button class="menu-item" onclick="menuNavTo('contacts')">Contacts</button>
     <button class="menu-item" onclick="menuNavTo('photos')">Photo Reel</button>
     <button class="menu-item" onclick="menuNavTo('medical')">Medical Info</button>
@@ -2922,6 +3126,23 @@
     </div>
   </div>
 
+  <!-- ===== CALL HISTORY SCREEN ===== -->
+  <div class="settings-screen" id="callHistoryScreen">
+    <div class="settings-header">
+      <button class="settings-back" onclick="navTo('home')">Back</button>
+      <div class="settings-heading">Recent Calls</div>
+    </div>
+    <div class="call-history-list" id="callHistoryList">
+      <div class="call-history-empty">No recent calls.</div>
+    </div>
+  </div>
+
+  <!-- ===== PHOTO FULLSCREEN OVERLAY ===== -->
+  <div class="photo-fullscreen-overlay" id="photoFullscreenOverlay" onclick="closePhotoFullscreen()">
+    <button class="photo-fullscreen-close" onclick="closePhotoFullscreen()">X</button>
+    <img id="photoFullscreenImg" src="" alt="Full size photo" />
+  </div>
+
   <!-- ===== SETTINGS SCREEN ===== -->
   <div class="settings-screen" id="settingsScreen">
     <div class="settings-header">
@@ -3149,6 +3370,22 @@
     </div>
   </div>
 
+  <!-- ===== FACTORY RESET CONFIRMATION OVERLAY ===== -->
+  <div class="passcode-overlay" id="factoryResetOverlay">
+    <div class="setup-title" style="color:#C25B40;">Factory Reset</div>
+    <div class="setup-subtitle">This will erase all data and return the device to its initial state.</div>
+    <div class="setup-subtitle" style="font-weight:600;margin-top:16px;">Type <span style="letter-spacing:2px;font-size:1.1em;">RESET</span> to confirm</div>
+    <input type="text" id="factoryResetInput" autocomplete="off" autocapitalize="characters" spellcheck="false"
+           style="margin-top:20px;font-family:'Jost',sans-serif;font-size:1.3rem;font-weight:600;letter-spacing:3px;
+                  text-align:center;width:200px;padding:12px 16px;border:2px solid #C25B40;border-radius:12px;
+                  background:var(--warm-white);color:var(--ink);outline:none;" placeholder="_ _ _ _ _">
+    <div id="factoryResetError" style="color:#C25B40;font-size:0.82rem;min-height:1.4em;margin-top:8px;">&nbsp;</div>
+    <div style="display:flex;gap:12px;margin-top:20px;">
+      <button class="settings-btn" onclick="closeFactoryResetOverlay()" style="min-width:100px;">Cancel</button>
+      <button class="settings-btn danger" onclick="confirmFactoryReset()" style="min-width:100px;">Confirm</button>
+    </div>
+  </div>
+
   <!-- ===== PASSCODE VERIFICATION OVERLAY ===== -->
   <div class="passcode-overlay" id="passcodeOverlay">
     <div class="setup-title">Enter Passcode</div>
@@ -3335,6 +3572,12 @@
       <button class="quick-reply-btn" onclick="sendQuickReply('See you soon')">See you soon</button>
     </div>
     <div class="reply-divider">or type your own</div>
+    <div style="padding:8px 12px 0;">
+      <button class="speak-btn" id="speakBtn" onclick="toggleSpeechToText()">
+        <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5zm6 6c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+        <span id="speakBtnText">Speak</span>
+      </button>
+    </div>
     <div class="reply-compose">
       <div class="reply-text-display" id="replyTextDisplay"></div>
     </div>
@@ -3838,6 +4081,7 @@
     let callTimerInterval = null;
     let callStartTime = null;
     let incomingCallData = null; // stores room URL and caller info for incoming calls
+    let currentCallDirection = 'outbound'; // 'inbound' or 'outbound'
 
     // ===== CLOCK =====
     function updateTime() {
@@ -3911,7 +4155,7 @@
             nameDiv.textContent = contact.name;
 
             const relDiv = document.createElement('div');
-            relDiv.style.cssText = 'font-family:Jost,sans-serif;font-weight:300;font-size:var(--body);color:var(--mid);text-align:center;margin-top:4px;';
+            relDiv.style.cssText = 'font-family:Jost,sans-serif;font-weight:500;font-size:var(--body);color:var(--mid);text-align:center;margin-top:4px;';
             relDiv.textContent = contact.relationship || '';
 
             tile.appendChild(photoDiv);
@@ -3940,6 +4184,7 @@
       document.getElementById('messagesScreen').classList.toggle('active', id === 'messages');
       document.getElementById('threadScreen').classList.toggle('active', id === 'thread');
       document.getElementById('messageViewScreen').classList.toggle('active', id === 'messageView');
+      document.getElementById('callHistoryScreen').classList.toggle('active', id === 'callHistory');
       document.getElementById('msgNotification').classList.toggle('active', id === 'msgNotification');
       document.getElementById('reminderNotification').classList.toggle('active', id === 'reminderNotification');
       document.getElementById('vmNotification').classList.toggle('active', id === 'vmNotification');
@@ -3952,13 +4197,13 @@
       // Dismiss slideshow when navigating
       if (id !== 'home') dismissSlideshow();
       // Show bottom nav on most screens
-      const showNav = ['home', 'messages', 'contacts', 'settings', 'help', 'feedback', 'wifiChange'].includes(id);
+      const showNav = ['home', 'messages', 'contacts', 'settings', 'help', 'feedback', 'wifiChange', 'callHistory'].includes(id);
       document.getElementById('bottomNav').style.display = showNav ? 'flex' : 'none';
       // Update nav highlight
       // Close menu when changing screens
       closeMenu();
       // Log navigation to audit trail (skip transient screens)
-      const auditScreens = ['home', 'contacts', 'messages', 'settings', 'help', 'medical', 'contactCard', 'thread'];
+      const auditScreens = ['home', 'contacts', 'messages', 'settings', 'help', 'medical', 'contactCard', 'thread', 'callHistory'];
       if (auditScreens.includes(id)) {
         fetch('http://localhost:3000/api/audit/log', {
           method: 'POST',
@@ -3990,6 +4235,7 @@
     function callContact(contact) {
       if (!contact.dailyRoomUrl) return;
       currentContact = contact;
+      currentCallDirection = 'outbound';
       document.getElementById('callingName').textContent = contact.name;
       showScreen('calling');
 
@@ -4090,6 +4336,11 @@
     }
 
     function endCall() {
+      // Log call to history before clearing state
+      if (currentContact && callStartTime) {
+        const duration = Math.floor((Date.now() - callStartTime) / 1000);
+        logCallToHistory(currentCallDirection, currentContact.name, duration, 'completed');
+      }
       if (callObject) { callObject.leave().catch(()=>{}); callObject.destroy().catch(()=>{}); callObject = null; }
       // Clear outbound signal
       fetch('http://localhost:3000/api/calls/outbound/clear', { method: 'POST' }).catch(() => {});
@@ -4166,6 +4417,11 @@
       if (target === 'wifiChange') {
         showScreen('wifiChange');
         loadWifiNetworks();
+        return;
+      }
+      if (target === 'callHistory') {
+        loadCallHistory();
+        showScreen('callHistory');
         return;
       }
       navTo(target);
@@ -4451,8 +4707,34 @@
       document.getElementById('passcodeRemoveBtn').style.display = 'none';
     }
 
-    // Factory reset (dev)
+    // Factory reset (dev) — gated with "type RESET to confirm"
     function devResetDevice() {
+      var overlay = document.getElementById('factoryResetOverlay');
+      var input = document.getElementById('factoryResetInput');
+      var error = document.getElementById('factoryResetError');
+      input.value = '';
+      error.innerHTML = '&nbsp;';
+      overlay.classList.add('active');
+      setTimeout(function() { input.focus(); }, 100);
+    }
+
+    function closeFactoryResetOverlay() {
+      document.getElementById('factoryResetOverlay').classList.remove('active');
+      document.getElementById('factoryResetInput').value = '';
+      document.getElementById('factoryResetError').innerHTML = '&nbsp;';
+    }
+
+    function confirmFactoryReset() {
+      var input = document.getElementById('factoryResetInput');
+      var error = document.getElementById('factoryResetError');
+      if (input.value.trim().toUpperCase() !== 'RESET') {
+        error.textContent = 'Please type RESET exactly to confirm.';
+        input.value = '';
+        input.focus();
+        return;
+      }
+      // Proceed with factory reset
+      closeFactoryResetOverlay();
       localStorage.clear();
       nameBuffer = '';
       pwBuffer = '';
@@ -4546,6 +4828,7 @@
 
       if (incomingCallData && incomingCallData.roomUrl) {
         // Join the Daily room
+        currentCallDirection = 'inbound';
         currentContact = { name: incomingCallData.callerName, dailyRoomUrl: incomingCallData.roomUrl };
         document.getElementById('callingName').textContent = incomingCallData.callerName;
         showScreen('calling');
@@ -4570,9 +4853,10 @@
         incomingCountdownInterval = null;
       }
       stopRingtone();
-      // Record missed call for banner
-      if (incomingCallData && incomingCallData.from) {
-        showMissedCallBanner(incomingCallData.from);
+      // Record missed call for banner and history
+      if (incomingCallData && incomingCallData.callerName) {
+        showMissedCallBanner(incomingCallData.callerName);
+        logCallToHistory('inbound', incomingCallData.callerName, 0, 'missed');
       }
       // Acknowledge to clear the signal
       fetch('http://localhost:3000/api/calls/ack', { method: 'POST' }).catch(() => {});
@@ -4580,7 +4864,10 @@
       showScreen('home');
     }
 
+    let missedCallCallerName = null;
+
     function showMissedCallBanner(callerName) {
+      missedCallCallerName = callerName;
       const now = new Date();
       const use12 = localStorage.getItem('ken-clock-format') === '12';
       let hours = now.getHours();
@@ -4599,6 +4886,19 @@
 
     function dismissMissedCall() {
       document.getElementById('missedCallBanner').style.display = 'none';
+      missedCallCallerName = null;
+    }
+
+    function callBackMissed() {
+      if (!missedCallCallerName) return;
+      const contact = allContacts.find(c => c.name === missedCallCallerName);
+      if (contact && contact.dailyRoomUrl) {
+        dismissMissedCall();
+        confirmCallContact(contact);
+      } else {
+        // No matching contact with a room URL - just dismiss
+        dismissMissedCall();
+      }
     }
 
     function sendToVoicemail() {
@@ -5028,10 +5328,11 @@
             new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime()
           )[0];
           let preview;
+          const hasPhoto = lastMsg.photo || lastMsg.image || lastMsg.photoUrl || lastMsg.imageUrl;
           if (convo.isGroup) {
-            preview = (lastMsg.from || 'Someone') + ': ' + lastMsg.text;
+            preview = (lastMsg.from || 'Someone') + ': ' + (hasPhoto ? '📷 ' : '') + lastMsg.text;
           } else {
-            preview = lastMsg.isReply ? 'You: ' + lastMsg.text : lastMsg.text;
+            preview = lastMsg.isReply ? 'You: ' + lastMsg.text : (hasPhoto ? '📷 ' : '') + lastMsg.text;
           }
           const timeStr = formatMessageTime(new Date(lastMsg.sentAt));
           const hasUnread = convo.unread > 0;
@@ -5066,9 +5367,14 @@
         threadEl.innerHTML = msgs.map(m => {
           const sender = m.isReply ? kenName : m.from;
           const timeStr = formatMessageTime(new Date(m.sentAt));
+          const msgPhoto = m.photo || m.image || m.photoUrl || m.imageUrl;
+          const photoThumb = msgPhoto
+            ? '<img class="msg-thread-image" src="' + escHtml(msgPhoto) + '" alt="Photo" onerror="this.style.display=\'none\'" />'
+            : '';
           return `<div class="msg-thread-item ${m.isReply ? 'is-reply' : ''}" onclick="viewMessage('${m.id}')">
             <div class="msg-thread-from">${escHtml(sender)}</div>
             <div class="msg-thread-text">${escHtml(m.text)}</div>
+            ${photoThumb}
             <div class="msg-thread-time">${timeStr}</div>
           </div>`;
         }).join('');
@@ -5117,6 +5423,21 @@
         document.getElementById('msgViewFrom').textContent = msg.from;
         document.getElementById('msgViewTime').textContent = formatMessageTime(new Date(msg.sentAt));
         document.getElementById('msgViewText').textContent = msg.text;
+
+        // Show photo/image if present
+        const existingImg = document.getElementById('msgViewImage');
+        if (existingImg) existingImg.remove();
+        const photoUrl = msg.photo || msg.image || msg.photoUrl || msg.imageUrl;
+        if (photoUrl) {
+          const imgEl = document.createElement('img');
+          imgEl.id = 'msgViewImage';
+          imgEl.className = 'msg-view-image';
+          imgEl.src = photoUrl;
+          imgEl.alt = 'Photo from ' + (msg.from || 'contact');
+          imgEl.onclick = function() { openPhotoFullscreen(photoUrl); };
+          imgEl.onerror = function() { this.style.display = 'none'; };
+          document.getElementById('msgViewText').after(imgEl);
+        }
 
         // Show reactions
         var reactionsEl = document.getElementById('msgViewReactions');
@@ -5202,7 +5523,9 @@
 
     function readMessageAloud() {
       if (!currentMessage) return;
-      readAloud(currentMessage.from + ' says: ' + currentMessage.text);
+      const hasPhoto = currentMessage.photo || currentMessage.image || currentMessage.photoUrl || currentMessage.imageUrl;
+      const photoNote = hasPhoto ? ' They also sent a photo.' : '';
+      readAloud(currentMessage.from + ' says: ' + currentMessage.text + photoNote);
     }
 
     function toggleDeviceReactPicker() {
@@ -5389,16 +5712,19 @@
     }
 
     function cancelReply() {
+      stopSpeechToText();
       document.getElementById('replyScreen').classList.remove('active');
       replyBuffer = '';
     }
 
     async function sendTypedReply() {
       if (replyBuffer.trim().length < 1) return;
+      stopSpeechToText();
       await sendReplyMessage(replyBuffer.trim());
     }
 
     async function sendQuickReply(text) {
+      stopSpeechToText();
       await sendReplyMessage(text);
     }
 
@@ -6984,6 +7310,172 @@
     loadEmergencyContacts();
     setInterval(loadMedicalInfo, 120000);
     setInterval(loadEmergencyContacts, 120000);
+
+    // ===== CALL HISTORY (Feature #18) =====
+    function getCallHistory() {
+      try {
+        return JSON.parse(localStorage.getItem('ken-call-history') || '[]');
+      } catch { return []; }
+    }
+
+    function logCallToHistory(direction, contactName, durationSecs, status) {
+      const history = getCallHistory();
+      history.unshift({
+        id: Date.now().toString(),
+        direction: direction,
+        contactName: contactName,
+        duration: durationSecs,
+        status: status || 'completed',
+        timestamp: new Date().toISOString()
+      });
+      // Keep only last 20
+      if (history.length > 20) history.length = 20;
+      localStorage.setItem('ken-call-history', JSON.stringify(history));
+    }
+
+    function formatCallDuration(secs) {
+      if (!secs || secs <= 0) return '';
+      const m = Math.floor(secs / 60);
+      const s = secs % 60;
+      if (m > 0) return m + ' min ' + s + ' sec';
+      return s + ' sec';
+    }
+
+    function loadCallHistory() {
+      const history = getCallHistory();
+      const listEl = document.getElementById('callHistoryList');
+      if (history.length === 0) {
+        listEl.innerHTML = '<div class="call-history-empty">No recent calls.</div>';
+        return;
+      }
+      listEl.innerHTML = history.map(entry => {
+        const contact = allContacts.find(c => c.name === entry.contactName);
+        const photoHtml = contact && contact.photo
+          ? '<img src="' + contact.photo + '" alt="' + escHtml(entry.contactName) + '" onerror="this.parentNode.innerHTML=\'' + escHtml(entry.contactName).charAt(0) + '\'" />'
+          : escHtml(entry.contactName).charAt(0);
+
+        let dirLabel, dirClass;
+        if (entry.status === 'missed') {
+          dirLabel = 'Missed';
+          dirClass = 'missed';
+        } else if (entry.direction === 'inbound') {
+          dirLabel = 'Incoming';
+          dirClass = 'incoming';
+        } else {
+          dirLabel = 'Outgoing';
+          dirClass = 'outgoing';
+        }
+
+        const durStr = formatCallDuration(entry.duration);
+        const timeStr = formatMessageTime(new Date(entry.timestamp));
+
+        return '<div class="call-history-item" onclick="callHistoryTap(\'' + escHtml(entry.contactName) + '\')">' +
+          '<div class="call-history-photo">' + photoHtml + '</div>' +
+          '<div class="call-history-info">' +
+            '<div class="call-history-name">' + escHtml(entry.contactName) + '</div>' +
+            '<div class="call-history-meta">' +
+              '<span class="call-history-direction ' + dirClass + '">' + dirLabel + '</span>' +
+              (durStr ? ' &middot; ' + durStr : '') +
+              ' &middot; ' + timeStr +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    function callHistoryTap(contactName) {
+      const contact = allContacts.find(c => c.name === contactName);
+      if (contact && contact.dailyRoomUrl) {
+        confirmCallContact(contact);
+      }
+    }
+
+    // ===== PHOTO MESSAGES (Feature #13) =====
+    function openPhotoFullscreen(src) {
+      document.getElementById('photoFullscreenImg').src = src;
+      document.getElementById('photoFullscreenOverlay').classList.add('active');
+    }
+
+    function closePhotoFullscreen() {
+      document.getElementById('photoFullscreenOverlay').classList.remove('active');
+      document.getElementById('photoFullscreenImg').src = '';
+    }
+
+    // ===== VOICE-TO-TEXT (Feature #12) =====
+    let speechRecognition = null;
+    let speechSilenceTimer = null;
+
+    function toggleSpeechToText() {
+      if (speechRecognition) {
+        stopSpeechToText();
+        return;
+      }
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        // Fallback if not supported
+        document.getElementById('speakBtnText').textContent = 'Not supported';
+        setTimeout(() => { document.getElementById('speakBtnText').textContent = 'Speak'; }, 2000);
+        return;
+      }
+      speechRecognition = new SpeechRecognition();
+      speechRecognition.lang = 'en-GB';
+      speechRecognition.interimResults = true;
+      speechRecognition.continuous = true;
+      speechRecognition.maxAlternatives = 1;
+
+      const btn = document.getElementById('speakBtn');
+      const btnText = document.getElementById('speakBtnText');
+      btn.classList.add('listening');
+      btnText.textContent = 'Listening...';
+
+      // Auto-stop after 10 seconds of silence
+      resetSpeechSilenceTimer();
+
+      speechRecognition.onresult = function(event) {
+        resetSpeechSilenceTimer();
+        let transcript = '';
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        if (transcript) {
+          // Capitalise first letter
+          transcript = transcript.charAt(0).toUpperCase() + transcript.slice(1);
+          replyBuffer = transcript;
+          document.getElementById('replyTextDisplay').textContent = replyBuffer;
+          document.getElementById('replySendBtn').classList.toggle('disabled', replyBuffer.trim().length < 1);
+        }
+      };
+
+      speechRecognition.onerror = function() {
+        stopSpeechToText();
+      };
+
+      speechRecognition.onend = function() {
+        // If it ended naturally (not by us), update UI
+        stopSpeechToText();
+      };
+
+      speechRecognition.start();
+    }
+
+    function resetSpeechSilenceTimer() {
+      if (speechSilenceTimer) clearTimeout(speechSilenceTimer);
+      speechSilenceTimer = setTimeout(function() {
+        stopSpeechToText();
+      }, 10000);
+    }
+
+    function stopSpeechToText() {
+      if (speechSilenceTimer) { clearTimeout(speechSilenceTimer); speechSilenceTimer = null; }
+      if (speechRecognition) {
+        try { speechRecognition.stop(); } catch(e) {}
+        speechRecognition = null;
+      }
+      const btn = document.getElementById('speakBtn');
+      const btnText = document.getElementById('speakBtnText');
+      btn.classList.remove('listening');
+      btnText.textContent = 'Speak';
+    }
 
     // Boot
     init();
