@@ -98,6 +98,95 @@ async function decryptObject(env, obj, fields) {
   return result;
 }
 
+// ===== PII TOKENISATION & ENCRYPTED STORAGE =====
+// Separate encryption key for PII token mappings (stored in KEN_PII namespace)
+// Even if KEN_KV is compromised, PII mappings remain encrypted without PII_KEY
+
+const RETENTION_PERIODS = {
+  medical: 3 * 365 * 24 * 60 * 60 * 1000,   // 3 years — UK safeguarding
+  audit: 6 * 365 * 24 * 60 * 60 * 1000,     // 6 years — legal/regulatory
+  messages: 1 * 365 * 24 * 60 * 60 * 1000,  // 1 year — dispute resolution
+  general: 90 * 24 * 60 * 60 * 1000,        // 90 days — everything else
+};
+
+async function getPiiKey(env) {
+  const keyMaterial = env.PII_KEY || 'ken-pii-default-key-2026';
+  const encoder = new TextEncoder();
+  const rawKey = await crypto.subtle.digest('SHA-256', encoder.encode(keyMaterial));
+  return crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+async function encryptPii(env, plaintext) {
+  if (!plaintext || typeof plaintext !== 'string') return plaintext;
+  const key = await getPiiKey(env);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(plaintext);
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, encoded);
+  const ivB64 = btoa(String.fromCharCode(...iv));
+  const ctB64 = btoa(String.fromCharCode(...new Uint8Array(ciphertext)));
+  return 'PII:' + ivB64 + ':' + ctB64;
+}
+
+async function decryptPii(env, encrypted) {
+  if (!encrypted || typeof encrypted !== 'string' || !encrypted.startsWith('PII:')) return encrypted;
+  const key = await getPiiKey(env);
+  const parts = encrypted.slice(4).split(':');
+  const iv = Uint8Array.from(atob(parts[0]), c => c.charCodeAt(0));
+  const ciphertext = Uint8Array.from(atob(parts[1]), c => c.charCodeAt(0));
+  const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+  return new TextDecoder().decode(decrypted);
+}
+
+// Generate a PII token and store encrypted PII mapping in KEN_PII
+async function tokenisePii(env, piiData, retentionCategory) {
+  const token = 'TOK_' + crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  const encryptedPii = await encryptPii(env, JSON.stringify(piiData));
+  const retentionMs = RETENTION_PERIODS[retentionCategory] || RETENTION_PERIODS.general;
+  await env.KEN_PII.put(`pii:${token}`, JSON.stringify({
+    data: encryptedPii,
+    createdAt: new Date().toISOString(),
+    retentionExpiry: new Date(Date.now() + retentionMs).toISOString(),
+    category: retentionCategory,
+  }));
+  return token;
+}
+
+// Resolve a PII token — returns decrypted PII data (HQ use only)
+async function resolvePiiToken(env, token) {
+  const record = await env.KEN_PII.get(`pii:${token}`, 'json');
+  if (!record) return null;
+  const decrypted = await decryptPii(env, record.data);
+  try { return JSON.parse(decrypted); } catch { return decrypted; }
+}
+
+// Replace PII fields in a message/record with a token
+function tokeniseRecord(record, emailToToken) {
+  if (!record) return record;
+  const r = { ...record };
+  if (r.fromEmail && emailToToken[r.fromEmail]) {
+    r.from = emailToToken[r.fromEmail];
+    r.fromEmail = emailToToken[r.fromEmail];
+  }
+  if (r.toEmail && emailToToken[r.toEmail]) {
+    r.to = emailToToken[r.toEmail];
+    r.toEmail = emailToToken[r.toEmail];
+  }
+  if (r.userId && emailToToken[r.userId]) {
+    r.userId = emailToToken[r.userId];
+  }
+  if (r.email && emailToToken[r.email]) {
+    r.email = emailToToken[r.email];
+  }
+  if (r.invitedBy && emailToToken[r.invitedBy]) {
+    r.invitedBy = emailToToken[r.invitedBy];
+  }
+  if (r.carerId && emailToToken[r.carerId]) {
+    r.carerId = emailToToken[r.carerId];
+    r.carerName = emailToToken[r.carerId] || r.carerName;
+  }
+  return r;
+}
+
 // ===== ROLE & PERMISSIONS SYSTEM =====
 // Roles (ascending access): user, standard, admin, carer, hq
 const VALID_ROLES = ['user', 'standard', 'admin', 'carer', 'hq'];
@@ -205,8 +294,9 @@ export default {
       if (rl.limited) return json({ error: 'Too many attempts. Try again later.' }, 429);
       try {
         const body = await request.json();
-        const { email, password, name, phone, deviceId } = body;
+        const { email, password, name, phone, deviceId, consent, policyVersion } = body;
         if (!email || !password || !name) return json({ error: 'Email, password and name are required' }, 400);
+        if (!consent) return json({ error: 'You must agree to the Privacy Policy and Terms to create an account' }, 400);
         if (password.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400);
         const existing = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (existing) return json({ error: 'An account with this email already exists' }, 400);
@@ -227,6 +317,16 @@ export default {
           photo: '',
           devices,
           createdAt: new Date().toISOString(),
+          consent: {
+            accepted: true,
+            policyVersion: policyVersion || '2.0',
+            consentedAt: new Date().toISOString(),
+          },
+          subscriptions: {
+            emailNotifications: { enabled: true, updatedAt: new Date().toISOString() },
+            birthdayReminders: { enabled: true, updatedAt: new Date().toISOString() },
+            productUpdates: { enabled: false, updatedAt: new Date().toISOString() },
+          },
         };
         await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
         // Create session
@@ -271,6 +371,9 @@ export default {
         }
         const token = crypto.randomUUID();
         await env.KEN_KV.put(`session:${token}`, JSON.stringify({ email: user.email, token, createdAt: new Date().toISOString() }), { expirationTtl: 2592000 });
+        // Track last login
+        user.lastLogin = new Date().toISOString();
+        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
         const headers = { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Set-Cookie': `ken_session=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000` };
         return new Response(JSON.stringify({ success: true }), { headers });
       } catch { return json({ error: 'Invalid request' }, 400); }
@@ -443,6 +546,8 @@ export default {
         carerProfile: user.carerProfile || null,
         mfaEnabled: !!user.mfaEnabled,
         poa: user.poa || false,
+        consent: user.consent || null,
+        subscriptions: user.subscriptions || {},
       }});
     }
 
@@ -1089,6 +1194,52 @@ export default {
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
+    // ===== ADD DEVICE TO EXISTING ACCOUNT =====
+    if (request.method === 'POST' && path === '/api/auth/add-device') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      try {
+        const body = await request.json();
+        const { deviceId } = body;
+        if (!deviceId) return json({ error: 'deviceId required' }, 400);
+        // Check device exists
+        const device = await env.KEN_KV.get(`device:${deviceId}`, 'json');
+        if (!device) {
+          // Register the device if it doesn't exist yet
+          await env.KEN_KV.put(`device:${deviceId}`, JSON.stringify({ deviceId, createdAt: new Date().toISOString() }));
+          const devices = await env.KEN_KV.get('devices:all', 'json') || [];
+          if (!devices.includes(deviceId)) { devices.push(deviceId); await env.KEN_KV.put('devices:all', JSON.stringify(devices)); }
+        }
+        // Check for invite
+        const invite = await env.KEN_KV.get(`invite:${deviceId}:${auth.user.email}`, 'json');
+        const role = invite ? invite.role : 'standard';
+        if (invite) await env.KEN_KV.delete(`invite:${deviceId}:${auth.user.email}`);
+        // Add device to user
+        if (!auth.user.devices) auth.user.devices = {};
+        if (auth.user.devices[deviceId]) return json({ error: 'Device already linked to your account' }, 400);
+        auth.user.devices[deviceId] = { role };
+        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+        await logAudit(env, deviceId, auth.user.email, 'Device added to account', { role });
+        return json({ success: true, deviceId, role });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== SUBSCRIPTION PREFERENCES =====
+    if (request.method === 'POST' && path === '/api/auth/subscriptions') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      try {
+        const body = await request.json();
+        const { key, enabled } = body;
+        const validKeys = ['emailNotifications', 'birthdayReminders', 'productUpdates'];
+        if (!validKeys.includes(key)) return json({ error: 'Invalid subscription key' }, 400);
+        if (!auth.user.subscriptions) auth.user.subscriptions = {};
+        auth.user.subscriptions[key] = { enabled: !!enabled, updatedAt: new Date().toISOString() };
+        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+        return json({ success: true, subscriptions: auth.user.subscriptions });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
     if (request.method === 'POST' && path === '/api/auth/poa') {
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
@@ -1349,6 +1500,33 @@ export default {
       const totalOnline = devices.filter(d => d.online).length;
       const totalAlerts = devices.reduce((sum, d) => sum + d.unresolvedAlerts, 0);
       return json({ devices, summary: { total: devices.length, online: totalOnline, alerts: totalAlerts } });
+    }
+
+    // HQ: Get users with access to a specific device
+    if (request.method === 'GET' && path.match(/^\/api\/hq\/device\/[\w-]+\/users$/)) {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'hq') return json({ error: 'HQ role required' }, 403);
+      const deviceId = path.split('/')[4];
+      const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+      const users = [];
+      for (const key of allUsers.keys) {
+        try {
+          const u = await env.KEN_KV.get(key.name, 'json');
+          if (!u || !u.devices || !u.devices[deviceId]) continue;
+          users.push({
+            name: u.name || '',
+            email: u.email || '',
+            role: u.devices[deviceId].role || u.globalRole || 'user',
+            lastLogin: u.lastLogin || null,
+          });
+        } catch {}
+      }
+      users.sort((a, b) => {
+        const order = { admin: 0, carer: 1, hq: 2, standard: 3, user: 4 };
+        return (order[a.role] ?? 5) - (order[b.role] ?? 5);
+      });
+      return json({ users, deviceId });
     }
 
     // HQ broadcast message to all devices
@@ -2146,9 +2324,14 @@ export default {
       const parts = path.split('/');
       const deviceId = parts[3];
       const vmId = parts[4];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const role = getUserRole(auth.user, deviceId);
+      if (!role) return json({ error: 'Access denied' }, 403);
       const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
       const filtered = voicemails.filter(v => v.id !== vmId);
       await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(filtered));
+      await logAudit(env, deviceId, auth.user.email, 'Deleted voicemail', { vmId });
       return json({ success: true });
     }
 
@@ -2759,7 +2942,330 @@ export default {
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
-    // ===== DEVICE DECOMMISSION (delete cascade) =====
+    // ===== USER DELETION (GDPR-compliant tokenisation) =====
+    // HQ-only. Tokenises PII, replaces across all device records, deletes account.
+    if (request.method === 'POST' && path === '/api/admin/user/delete') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'hq') return json({ error: 'HQ access required' }, 403);
+      try {
+        const body = await request.json();
+        const { email, confirm } = body;
+        if (!email) return json({ error: 'email required' }, 400);
+        if (!confirm) return json({ error: 'Set confirm: true to delete user' }, 400);
+        if (email.toLowerCase() === auth.user.email) return json({ error: 'Cannot delete your own account' }, 400);
+
+        const targetEmail = email.toLowerCase();
+        const targetUser = await env.KEN_KV.get(`user:${targetEmail}`, 'json');
+        if (!targetUser) return json({ error: 'User not found' }, 404);
+
+        // Generate PII token and store encrypted mapping in KEN_PII
+        const piiData = {
+          name: targetUser.name,
+          email: targetUser.email,
+          phone: targetUser.phone || null,
+        };
+        const token = await tokenisePii(env, piiData, 'audit');
+        const emailToToken = { [targetEmail]: token };
+        if (targetUser.name) emailToToken[targetUser.name] = token;
+
+        // Get all devices this user had access to
+        const userDevices = Object.keys(targetUser.devices || {});
+
+        // Tokenise PII in all device records
+        for (const deviceId of userDevices) {
+          // --- Messages: tokenise sender/recipient references ---
+          const history = await env.KEN_KV.get(`history:${deviceId}`, 'json');
+          if (history && history.length) {
+            const tokenised = history.map(m => tokeniseRecord(m, emailToToken));
+            await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(tokenised));
+          }
+          const pending = await env.KEN_KV.get(`messages:${deviceId}`, 'json');
+          if (pending && pending.length) {
+            const tokenised = pending.map(m => tokeniseRecord(m, emailToToken));
+            await env.KEN_KV.put(`messages:${deviceId}`, JSON.stringify(tokenised));
+          }
+
+          // --- Audit logs: tokenise userId references ---
+          const audit = await env.KEN_KV.get(`audit:${deviceId}`, 'json');
+          if (audit && audit.length) {
+            const tokenised = audit.map(a => tokeniseRecord(a, emailToToken));
+            await env.KEN_KV.put(`audit:${deviceId}`, JSON.stringify(tokenised));
+          }
+          // Also tokenise archived audit logs
+          const archiveList = await env.KEN_KV.list({ prefix: `audit-archive:${deviceId}:` });
+          for (const ak of archiveList.keys) {
+            const archived = await env.KEN_KV.get(ak.name, 'json');
+            if (archived && archived.length) {
+              const tokenised = archived.map(a => tokeniseRecord(a, emailToToken));
+              await env.KEN_KV.put(ak.name, JSON.stringify(tokenised));
+            }
+          }
+
+          // --- Care notes: tokenise author references ---
+          const medical = await env.KEN_KV.get(`medical:${deviceId}`, 'json');
+          if (medical && medical.careNotesLog) {
+            let notesLog = medical.careNotesLog;
+            if (typeof notesLog === 'string' && notesLog.startsWith('ENC:')) {
+              notesLog = await decryptField(env, notesLog);
+              try { notesLog = JSON.parse(notesLog); } catch {}
+            }
+            if (Array.isArray(notesLog)) {
+              medical.careNotesLog = notesLog.map(n => {
+                const updated = { ...n };
+                if (updated.author === targetEmail || updated.author === targetUser.name) updated.author = token;
+                if (updated.authorEmail === targetEmail) updated.authorEmail = token;
+                return updated;
+              });
+              if (typeof medical.careNotesLog !== 'string') {
+                medical.careNotesLog = await encryptField(env, JSON.stringify(medical.careNotesLog));
+              }
+              await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(medical));
+            }
+          }
+
+          // --- Feedback: tokenise submitter ---
+          const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json');
+          if (feedback && feedback.length) {
+            const tokenised = feedback.map(f => {
+              const updated = { ...f };
+              if (updated.from === targetEmail || updated.from === targetUser.name) updated.from = token;
+              return updated;
+            });
+            await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(tokenised));
+          }
+
+          // --- Scheduled messages: tokenise sender ---
+          const scheduledMsgs = await env.KEN_KV.get(`scheduled-msgs:${deviceId}`, 'json');
+          if (scheduledMsgs && scheduledMsgs.length) {
+            const tokenised = scheduledMsgs.map(m => tokeniseRecord(m, emailToToken));
+            await env.KEN_KV.put(`scheduled-msgs:${deviceId}`, JSON.stringify(tokenised));
+          }
+
+          // --- Groups: tokenise member references ---
+          const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json');
+          if (groups && groups.length) {
+            const tokenised = groups.map(g => ({
+              ...g,
+              members: (g.members || []).map(m => {
+                if (m.userId === targetEmail) return { ...m, userId: token, name: token };
+                return m;
+              }),
+              createdBy: g.createdBy === targetEmail ? token : g.createdBy,
+            }));
+            await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(tokenised));
+          }
+
+          // --- Clean up per-user keyed data for this device ---
+          await env.KEN_PII.put(`deleted-carer-alerts:${token}:${deviceId}`, JSON.stringify({
+            deletedAt: new Date().toISOString(),
+            retentionExpiry: new Date(Date.now() + RETENTION_PERIODS.general).toISOString(),
+          }));
+          await env.KEN_KV.delete(`carer-alerts:${deviceId}:${targetEmail}`);
+          await env.KEN_KV.delete(`check-ins:${deviceId}:${targetEmail}`);
+
+          // --- HQ access records ---
+          const hqAccessKeys = await env.KEN_KV.list({ prefix: `hq-access:${deviceId}:${targetEmail}:` });
+          for (const hk of hqAccessKeys.keys) {
+            await env.KEN_KV.delete(hk.name);
+          }
+        }
+
+        // --- Delete HQ access requests authored by this user ---
+        for (const deviceId of userDevices) {
+          const requests = await env.KEN_KV.get(`hq-access-requests:${deviceId}`, 'json');
+          if (requests && requests.length) {
+            const tokenised = requests.map(r => {
+              if (r.hqEmail === targetEmail) return { ...r, hqEmail: token };
+              if (r.approvedBy === targetEmail) return { ...r, approvedBy: token };
+              return r;
+            });
+            await env.KEN_KV.put(`hq-access-requests:${deviceId}`, JSON.stringify(tokenised));
+          }
+        }
+
+        // --- Delete user-level data ---
+        await env.KEN_KV.delete(`user:${targetEmail}`);
+        await env.KEN_KV.delete(`activity:${targetEmail}`);
+        await env.KEN_KV.delete(`notif-prefs:${targetEmail}`);
+
+        // --- Delete all sessions for this user ---
+        const sessionList = await env.KEN_KV.list({ prefix: 'session:' });
+        for (const sk of sessionList.keys) {
+          const sess = await env.KEN_KV.get(sk.name, 'json');
+          if (sess && sess.email === targetEmail) {
+            await env.KEN_KV.delete(sk.name);
+          }
+        }
+
+        // --- Delete any pending invites ---
+        const inviteList = await env.KEN_KV.list({ prefix: 'invite:' });
+        for (const ik of inviteList.keys) {
+          if (ik.name.endsWith(`:${targetEmail}`)) {
+            await env.KEN_KV.delete(ik.name);
+          }
+        }
+
+        // --- Log deletion across all affected devices ---
+        for (const deviceId of userDevices) {
+          await logAudit(env, deviceId, auth.user.email, 'User deleted (tokenised)', {
+            token, deletedEmail: token, devicesAffected: userDevices.length,
+          });
+        }
+
+        return json({ success: true, token, devicesAffected: userDevices.length });
+      } catch (e) { return json({ error: 'User deletion failed: ' + e.message }, 500); }
+    }
+
+    // ===== SUBJECT ACCESS REQUEST (HQ-only) =====
+    // Collects all data for a given email across all devices, including tokenised records
+    if (request.method === 'POST' && path === '/api/admin/sar') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'hq') return json({ error: 'HQ access required' }, 403);
+      try {
+        const body = await request.json();
+        const { email } = body;
+        if (!email) return json({ error: 'email required' }, 400);
+        const targetEmail = email.toLowerCase();
+        const targetUser = await env.KEN_KV.get(`user:${targetEmail}`, 'json');
+
+        const result = {
+          exportedAt: new Date().toISOString(),
+          exportedBy: auth.user.email,
+          requestType: 'Subject Access Request',
+          email: targetEmail,
+        };
+
+        if (targetUser) {
+          // Active user — collect all their data
+          result.userRecord = {
+            email: targetUser.email, name: targetUser.name, phone: targetUser.phone,
+            createdAt: targetUser.createdAt, mfaEnabled: !!targetUser.mfaEnabled,
+            poa: targetUser.poa || false, globalRole: targetUser.globalRole || null,
+          };
+          result.consent = targetUser.consent || null;
+          result.subscriptions = targetUser.subscriptions || {};
+          result.devices = [];
+          let totalMessages = 0, totalAuditEntries = 0;
+
+          for (const [deviceId, deviceRole] of Object.entries(targetUser.devices || {})) {
+            const deviceData = { deviceId, role: deviceRole.role || deviceRole };
+            const [history, contacts, medical, settings, audit, reminders, voicemails, callHistory, feedback, groups] = await Promise.all([
+              env.KEN_KV.get(`history:${deviceId}`, 'json'),
+              env.KEN_KV.get(`contactlist:${deviceId}`, 'json'),
+              env.KEN_KV.get(`medical:${deviceId}`, 'json'),
+              env.KEN_KV.get(`settings:${deviceId}`, 'json'),
+              env.KEN_KV.get(`audit:${deviceId}`, 'json'),
+              env.KEN_KV.get(`reminders:${deviceId}`, 'json'),
+              env.KEN_KV.get(`voicemails:${deviceId}`, 'json'),
+              env.KEN_KV.get(`callhistory:${deviceId}`, 'json'),
+              env.KEN_KV.get(`feedback:${deviceId}`, 'json'),
+              env.KEN_KV.get(`groups:${deviceId}`, 'json'),
+            ]);
+            // Filter messages to/from this user
+            const userMessages = (history || []).filter(m => m.fromEmail === targetEmail || m.toEmail === targetEmail);
+            deviceData.messages = userMessages;
+            totalMessages += userMessages.length;
+            // Filter audit entries by this user
+            const userAudit = (audit || []).filter(a => a.userId === targetEmail);
+            deviceData.auditEntries = userAudit;
+            totalAuditEntries += userAudit.length;
+            deviceData.contacts = contacts || [];
+            deviceData.medical = medical || {};
+            deviceData.settings = settings || {};
+            deviceData.reminders = reminders || [];
+            deviceData.voicemails = voicemails || [];
+            deviceData.callHistory = callHistory || {};
+            deviceData.feedback = (feedback || []).filter(f => f.from === targetEmail || f.from === targetUser.name);
+            deviceData.groups = (groups || []).filter(g => (g.members || []).some(m => m.userId === targetEmail));
+            // Per-user keyed data
+            deviceData.carerAlerts = await env.KEN_KV.get(`carer-alerts:${deviceId}:${targetEmail}`, 'json');
+            deviceData.checkIns = await env.KEN_KV.get(`check-ins:${deviceId}:${targetEmail}`, 'json');
+            result.devices.push(deviceData);
+          }
+          result.totalMessages = totalMessages;
+          result.totalAuditEntries = totalAuditEntries;
+          result.notificationPrefs = await env.KEN_KV.get(`notif-prefs:${targetEmail}`, 'json');
+        } else {
+          // User may have been deleted — search for their token in tokenised records
+          result.userRecord = null;
+          result.note = 'No active account found. Searching tokenised records...';
+          // Search PII vault for a token matching this email
+          const piiKeys = await env.KEN_PII.list({ prefix: 'pii:' });
+          let foundToken = null;
+          for (const key of piiKeys.keys) {
+            const record = await env.KEN_PII.get(key.name, 'json');
+            if (record && record.data) {
+              const decrypted = await resolvePiiToken(env, key.name.replace('pii:', ''));
+              if (decrypted && decrypted.email === targetEmail) {
+                foundToken = key.name.replace('pii:', '');
+                break;
+              }
+            }
+          }
+          if (foundToken) {
+            result.token = foundToken;
+            result.note = 'User was deleted. Data retained under token ' + foundToken;
+            // Collect retained records
+            result.retainedRecords = {};
+            const retainedKeys = await env.KEN_PII.list({ prefix: 'retained:' });
+            for (const rk of retainedKeys.keys) {
+              const retained = await env.KEN_PII.get(rk.name, 'json');
+              if (retained && retained.data) {
+                const hasToken = JSON.stringify(retained.data).includes(foundToken);
+                if (hasToken) result.retainedRecords[rk.name] = retained;
+              }
+            }
+          } else {
+            result.note = 'No active or tokenised records found for this email address.';
+          }
+        }
+
+        // Audit log the SAR
+        const globalAudit = await env.KEN_KV.get('audit:pii-access', 'json') || [];
+        globalAudit.push({
+          id: crypto.randomUUID(), type: 'SAR', email: targetEmail,
+          accessedBy: auth.user.email, timestamp: new Date().toISOString(),
+        });
+        await env.KEN_KV.put('audit:pii-access', JSON.stringify(globalAudit));
+
+        return json(result);
+      } catch (e) { return json({ error: 'SAR failed: ' + e.message }, 500); }
+    }
+
+    // ===== PII TOKEN RESOLVE (HQ-only, audit-logged) =====
+    if (request.method === 'POST' && path === '/api/admin/pii/resolve') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'hq') return json({ error: 'HQ access required' }, 403);
+      const rateCheck = await checkRateLimit(env, request, 'pii-resolve', 10, 60);
+      if (rateCheck.limited) return json({ error: 'Rate limited', retryAfter: rateCheck.retryAfter }, 429);
+      try {
+        const body = await request.json();
+        const { token, reason } = body;
+        if (!token || !token.startsWith('TOK_')) return json({ error: 'Valid token required' }, 400);
+        if (!reason || reason.trim().length < 10) return json({ error: 'Reason required (min 10 chars)' }, 400);
+
+        const piiData = await resolvePiiToken(env, token);
+        if (!piiData) return json({ error: 'Token not found or expired' }, 404);
+
+        // Audit log the PII access — log to a global audit key
+        const globalAudit = await env.KEN_KV.get('audit:pii-access', 'json') || [];
+        globalAudit.push({
+          id: crypto.randomUUID(),
+          token,
+          accessedBy: auth.user.email,
+          reason,
+          timestamp: new Date().toISOString(),
+        });
+        await env.KEN_KV.put('audit:pii-access', JSON.stringify(globalAudit));
+
+        return json({ success: true, token, pii: piiData });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
+    // ===== DEVICE DECOMMISSION (GDPR-compliant tokenised cascade) =====
     if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+\/decommission$/)) {
       const deviceId = path.split('/')[3];
       const auth = await requireAuth(request, env);
@@ -2769,7 +3275,104 @@ export default {
       try {
         const body = await request.json();
         if (!body.confirm) return json({ error: 'Set confirm: true to decommission' }, 400);
-        // Delete all device-related KV data
+
+        const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
+        const now = new Date().toISOString();
+
+        // Tokenise device user name if present
+        const devicePii = { deviceId, userName: deviceInfo.userName || null, location: deviceInfo.location || null };
+        const deviceToken = await tokenisePii(env, devicePii, 'audit');
+
+        // --- Tokenise PII in all user records associated with this device ---
+        const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+        const emailToToken = {};
+        for (const key of allUsers.keys) {
+          try {
+            const u = await env.KEN_KV.get(key.name, 'json');
+            if (u && u.devices && u.devices[deviceId]) {
+              // Create a token for each user associated with this device
+              if (!emailToToken[u.email]) {
+                const userToken = await tokenisePii(env, { name: u.name, email: u.email, phone: u.phone }, 'audit');
+                emailToToken[u.email] = userToken;
+              }
+              // Remove device from user's access
+              delete u.devices[deviceId];
+              await env.KEN_KV.put(key.name, JSON.stringify(u));
+            }
+          } catch {}
+        }
+
+        // --- Tokenise messages history ---
+        const history = await env.KEN_KV.get(`history:${deviceId}`, 'json');
+        if (history && history.length) {
+          const tokenised = history.map(m => tokeniseRecord(m, emailToToken));
+          await env.KEN_PII.put(`retained:history:${deviceId}`, JSON.stringify({
+            data: tokenised, deletedAt: now, deviceToken,
+            retentionExpiry: new Date(Date.now() + RETENTION_PERIODS.messages).toISOString(),
+          }));
+        }
+
+        // --- Retain audit logs (6 year retention) ---
+        const audit = await env.KEN_KV.get(`audit:${deviceId}`, 'json');
+        if (audit && audit.length) {
+          const tokenised = audit.map(a => tokeniseRecord(a, emailToToken));
+          await env.KEN_PII.put(`retained:audit:${deviceId}`, JSON.stringify({
+            data: tokenised, deletedAt: now, deviceToken,
+            retentionExpiry: new Date(Date.now() + RETENTION_PERIODS.audit).toISOString(),
+          }));
+        }
+        // Archive audit logs too
+        const archiveList = await env.KEN_KV.list({ prefix: `audit-archive:${deviceId}:` });
+        for (const ak of archiveList.keys) {
+          const archived = await env.KEN_KV.get(ak.name, 'json');
+          if (archived && archived.length) {
+            const tokenised = archived.map(a => tokeniseRecord(a, emailToToken));
+            await env.KEN_PII.put(`retained:${ak.name}`, JSON.stringify({
+              data: tokenised, deletedAt: now, deviceToken,
+              retentionExpiry: new Date(Date.now() + RETENTION_PERIODS.audit).toISOString(),
+            }));
+          }
+          await env.KEN_KV.delete(ak.name);
+        }
+
+        // --- Retain medical/care data (3 year retention) ---
+        const medical = await env.KEN_KV.get(`medical:${deviceId}`, 'json');
+        if (medical) {
+          await env.KEN_PII.put(`retained:medical:${deviceId}`, JSON.stringify({
+            data: medical, deletedAt: now, deviceToken,
+            retentionExpiry: new Date(Date.now() + RETENTION_PERIODS.medical).toISOString(),
+          }));
+        }
+        const patient = await env.KEN_KV.get(`patient:${deviceId}`, 'json');
+        if (patient) {
+          await env.KEN_PII.put(`retained:patient:${deviceId}`, JSON.stringify({
+            data: patient, deletedAt: now, deviceToken,
+            retentionExpiry: new Date(Date.now() + RETENTION_PERIODS.medical).toISOString(),
+          }));
+        }
+        const medAlerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json');
+        if (medAlerts && medAlerts.length) {
+          await env.KEN_PII.put(`retained:med-alerts:${deviceId}`, JSON.stringify({
+            data: medAlerts, deletedAt: now, deviceToken,
+            retentionExpiry: new Date(Date.now() + RETENTION_PERIODS.medical).toISOString(),
+          }));
+        }
+
+        // --- Retain feedback (1 year) ---
+        const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json');
+        if (feedback && feedback.length) {
+          const tokenised = feedback.map(f => {
+            const updated = { ...f };
+            if (emailToToken[updated.from]) updated.from = emailToToken[updated.from];
+            return updated;
+          });
+          await env.KEN_PII.put(`retained:feedback:${deviceId}`, JSON.stringify({
+            data: tokenised, deletedAt: now, deviceToken,
+            retentionExpiry: new Date(Date.now() + RETENTION_PERIODS.messages).toISOString(),
+          }));
+        }
+
+        // --- Delete all device KV data (now safely retained in KEN_PII) ---
         const keysToDelete = [
           `device:${deviceId}`, `device-key:${deviceId}`, `heartbeat:${deviceId}`, `heartbeat-time:${deviceId}`,
           `messages:${deviceId}`, `history:${deviceId}`, `contactlist:${deviceId}`, `pending:${deviceId}`,
@@ -2779,28 +3382,37 @@ export default {
           `offline-alerts:${deviceId}`, `read-receipts:${deviceId}`, `birthday-prefs:${deviceId}`,
           `scheduled-msgs:${deviceId}`, `med-alerts:${deviceId}`,
           `screen:active:${deviceId}`, `screen:frame:${deviceId}`,
+          `vm-read-receipts:${deviceId}`, `callhistory:${deviceId}`,
         ];
         for (const key of keysToDelete) {
           await env.KEN_KV.delete(key);
         }
+
+        // --- Clean up per-user keyed data (previously missing cascade) ---
+        for (const email of Object.keys(emailToToken)) {
+          await env.KEN_KV.delete(`carer-alerts:${deviceId}:${email}`);
+          await env.KEN_KV.delete(`check-ins:${deviceId}:${email}`);
+          const hqKeys = await env.KEN_KV.list({ prefix: `hq-access:${deviceId}:${email}:` });
+          for (const hk of hqKeys.keys) await env.KEN_KV.delete(hk.name);
+        }
+        await env.KEN_KV.delete(`hq-access-requests:${deviceId}`);
+
         // Remove from devices:all list
         const devices = await env.KEN_KV.get('devices:all', 'json') || [];
         const filtered = devices.filter(d => d !== deviceId);
         await env.KEN_KV.put('devices:all', JSON.stringify(filtered));
-        // Remove device from all users
-        const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
-        for (const key of allUsers.keys) {
-          try {
-            const u = await env.KEN_KV.get(key.name, 'json');
-            if (u && u.devices && u.devices[deviceId]) {
-              delete u.devices[deviceId];
-              await env.KEN_KV.put(key.name, JSON.stringify(u));
-            }
-          } catch {}
-        }
-        await logAudit(env, deviceId, auth.user.email, 'Device decommissioned', { keysDeleted: keysToDelete.length });
-        return json({ success: true, keysDeleted: keysToDelete.length });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+
+        // Log to retained audit (the device audit was just deleted)
+        const decommissionAudit = {
+          id: crypto.randomUUID(), userId: auth.user.email, action: 'Device decommissioned (tokenised)',
+          timestamp: now, details: { deviceToken, usersTokenised: Object.keys(emailToToken).length },
+        };
+        const piiAudit = await env.KEN_KV.get('audit:pii-access', 'json') || [];
+        piiAudit.push(decommissionAudit);
+        await env.KEN_KV.put('audit:pii-access', JSON.stringify(piiAudit));
+
+        return json({ success: true, deviceToken, usersTokenised: Object.keys(emailToToken).length });
+      } catch (e) { return json({ error: 'Decommission failed: ' + e.message }, 500); }
     }
 
     // ===== REMOTE PIN RESET (admin clears device passcode) =====
@@ -3178,6 +3790,109 @@ export default {
         await env.KEN_KV.put(sentKey, JSON.stringify(alreadySent), { expirationTtl: 86400 });
       } catch {}
     }
+
+    // ===== RETENTION PURGE: delete expired PII tokens and retained records =====
+    // Runs every 2 minutes with existing cron, but only processes once per day
+    const purgeCheck = await env.KEN_KV.get('retention-purge-last', 'json');
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (!purgeCheck || purgeCheck.date !== todayStr) {
+      try {
+        let purged = 0;
+        const now = Date.now();
+
+        // Purge expired PII token mappings
+        const piiKeys = await env.KEN_PII.list({ prefix: 'pii:' });
+        for (const key of piiKeys.keys) {
+          try {
+            const record = await env.KEN_PII.get(key.name, 'json');
+            if (record && record.retentionExpiry && new Date(record.retentionExpiry).getTime() <= now) {
+              await env.KEN_PII.delete(key.name);
+              purged++;
+            }
+          } catch {}
+        }
+
+        // Purge expired retained records (history, audit, medical, feedback)
+        const retainedKeys = await env.KEN_PII.list({ prefix: 'retained:' });
+        for (const key of retainedKeys.keys) {
+          try {
+            const record = await env.KEN_PII.get(key.name, 'json');
+            if (record && record.retentionExpiry && new Date(record.retentionExpiry).getTime() <= now) {
+              await env.KEN_PII.delete(key.name);
+              purged++;
+            }
+          } catch {}
+        }
+
+        await env.KEN_KV.put('retention-purge-last', JSON.stringify({ date: todayStr, purged }), { expirationTtl: 86400 });
+      } catch {}
+    }
+
+    // ===== BREACH DETECTION: anomaly monitoring =====
+    try {
+      const now = Date.now();
+      const window5min = 5 * 60 * 1000;
+
+      // Check for excessive auth failures (potential brute force)
+      const rlKeys = await env.KEN_KV.list({ prefix: 'ratelimit:login:' });
+      for (const key of rlKeys.keys) {
+        const rl = await env.KEN_KV.get(key.name, 'json');
+        if (rl && rl.count >= 10 && (now - rl.start) < window5min) {
+          const ip = key.name.replace('ratelimit:login:', '');
+          const alertKey = `breach-alert:login:${ip}`;
+          const existing = await env.KEN_KV.get(alertKey);
+          if (!existing) {
+            const globalAudit = await env.KEN_KV.get('audit:pii-access', 'json') || [];
+            globalAudit.push({
+              id: crypto.randomUUID(), type: 'BREACH_ALERT', severity: 'HIGH',
+              description: 'Excessive login failures from IP ' + ip + ' (' + rl.count + ' attempts)',
+              timestamp: new Date().toISOString(),
+            });
+            await env.KEN_KV.put('audit:pii-access', JSON.stringify(globalAudit));
+            await env.KEN_KV.put(alertKey, '1', { expirationTtl: 3600 }); // Don't re-alert for 1hr
+          }
+        }
+      }
+
+      // Check for excessive PII resolve activity (potential data exfiltration)
+      const piiAudit = await env.KEN_KV.get('audit:pii-access', 'json') || [];
+      const recentPiiAccess = piiAudit.filter(a => a.token && (now - new Date(a.timestamp).getTime()) < window5min);
+      if (recentPiiAccess.length >= 5) {
+        const alertKey = 'breach-alert:pii-bulk';
+        const existing = await env.KEN_KV.get(alertKey);
+        if (!existing) {
+          piiAudit.push({
+            id: crypto.randomUUID(), type: 'BREACH_ALERT', severity: 'CRITICAL',
+            description: 'Bulk PII token resolution detected: ' + recentPiiAccess.length + ' lookups in 5 minutes',
+            users: [...new Set(recentPiiAccess.map(a => a.accessedBy))],
+            timestamp: new Date().toISOString(),
+          });
+          await env.KEN_KV.put('audit:pii-access', JSON.stringify(piiAudit));
+          await env.KEN_KV.put(alertKey, '1', { expirationTtl: 3600 });
+        }
+      }
+
+      // Check for excessive password reset attempts
+      const resetKeys = await env.KEN_KV.list({ prefix: 'ratelimit:forgot:' });
+      for (const key of resetKeys.keys) {
+        const rl = await env.KEN_KV.get(key.name, 'json');
+        if (rl && rl.count >= 5 && (now - rl.start) < window5min) {
+          const ip = key.name.replace('ratelimit:forgot:', '');
+          const alertKey = `breach-alert:reset:${ip}`;
+          const existing = await env.KEN_KV.get(alertKey);
+          if (!existing) {
+            const globalAudit = await env.KEN_KV.get('audit:pii-access', 'json') || [];
+            globalAudit.push({
+              id: crypto.randomUUID(), type: 'BREACH_ALERT', severity: 'MEDIUM',
+              description: 'Excessive password reset attempts from IP ' + ip + ' (' + rl.count + ' attempts)',
+              timestamp: new Date().toISOString(),
+            });
+            await env.KEN_KV.put('audit:pii-access', JSON.stringify(globalAudit));
+            await env.KEN_KV.put(alertKey, '1', { expirationTtl: 3600 });
+          }
+        }
+      }
+    } catch {} // Breach detection should never break the cron
   },
 };
 
