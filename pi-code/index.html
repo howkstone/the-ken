@@ -3348,6 +3348,21 @@
       </div>
     </div>
 
+    <!-- Bluetooth Section -->
+    <div class="settings-section">
+      <div class="settings-section-title">Bluetooth</div>
+      <div id="btPairedList">
+        <div class="settings-row"><div class="settings-value">Loading...</div></div>
+      </div>
+      <div class="settings-row" style="justify-content:center;padding-top:16px;">
+        <button class="settings-btn" id="btScanBtn" onclick="btStartScan()">Find Devices</button>
+      </div>
+      <div id="btScanResults" style="display:none;">
+        <div class="settings-row" style="padding-top:8px;"><div class="settings-value" style="color:var(--gold);">Nearby devices</div></div>
+        <div id="btScanList"></div>
+      </div>
+    </div>
+
     <!-- About Section -->
     <div class="settings-section">
       <div class="settings-section-title">About</div>
@@ -4521,10 +4536,129 @@
       document.getElementById('settingsNlBrightness').textContent = nightlightBrightness + '%';
 
       showScreen('settings');
+      btLoadPaired();
     }
 
     function closeSettings() {
       navTo('home');
+    }
+
+    // ===== TOAST NOTIFICATION =====
+    function showKenToast(msg) {
+      let el = document.getElementById('kenToast');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'kenToast';
+        el.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--cream);font-family:Jost,sans-serif;font-size:28px;font-weight:500;padding:16px 32px;border-radius:16px;z-index:10000;opacity:0;transition:opacity 0.3s;pointer-events:none;';
+        document.body.appendChild(el);
+      }
+      el.textContent = msg;
+      el.style.opacity = '1';
+      clearTimeout(el._timer);
+      el._timer = setTimeout(() => { el.style.opacity = '0'; }, 2500);
+    }
+
+    function escapeHtml(str) {
+      const d = document.createElement('div');
+      d.textContent = str || '';
+      return d.innerHTML;
+    }
+
+    // ===== BLUETOOTH MANAGEMENT =====
+    async function btLoadPaired() {
+      const container = document.getElementById('btPairedList');
+      try {
+        const res = await fetch('/api/bluetooth/devices');
+        const data = await res.json();
+        const devices = data.devices || [];
+        if (devices.length === 0) {
+          container.innerHTML = '<div class="settings-row"><div class="settings-value">No paired devices</div></div>';
+          return;
+        }
+        container.innerHTML = devices.filter(d => d.paired).map(d => {
+          const icon = d.type === 'audio-headset' || d.type === 'audio-headphones' ? '🎧' : d.type === 'audio-card' ? '🔊' : '📱';
+          return '<div class="settings-row" style="flex-wrap:wrap;gap:8px;">' +
+            '<div style="flex:1;min-width:160px;"><div class="settings-label" style="font-size:32px;">' + icon + ' ' + escapeHtml(d.name) + '</div>' +
+            '<div class="settings-value" style="font-size:24px;margin-top:2px;">' + (d.connected ? 'Connected' : 'Not connected') + '</div></div>' +
+            '<div style="display:flex;gap:8px;">' +
+            (d.connected
+              ? '<button class="settings-btn" onclick="btDisconnect(\'' + d.mac + '\')">Disconnect</button>'
+              : '<button class="settings-btn" onclick="btConnect(\'' + d.mac + '\')">Connect</button>') +
+            '<button class="settings-btn danger" onclick="btForget(\'' + d.mac + '\',\'' + escapeHtml(d.name) + '\')">Forget</button>' +
+            '</div></div>';
+        }).join('');
+      } catch {
+        container.innerHTML = '<div class="settings-row"><div class="settings-value">Bluetooth unavailable</div></div>';
+      }
+    }
+
+    async function btStartScan() {
+      const btn = document.getElementById('btScanBtn');
+      const resultsDiv = document.getElementById('btScanResults');
+      const listDiv = document.getElementById('btScanList');
+      btn.textContent = 'Scanning...';
+      btn.disabled = true;
+      resultsDiv.style.display = 'block';
+      listDiv.innerHTML = '<div class="settings-row"><div class="settings-value">Searching for nearby devices...</div></div>';
+      try {
+        const res = await fetch('/api/bluetooth/scan', { method: 'POST' });
+        const data = await res.json();
+        const devices = (data.devices || []).filter(d => !d.paired);
+        if (devices.length === 0) {
+          listDiv.innerHTML = '<div class="settings-row"><div class="settings-value">No new devices found. Make sure the device is in pairing mode.</div></div>';
+        } else {
+          listDiv.innerHTML = devices.map(d =>
+            '<div class="settings-row">' +
+            '<div class="settings-label" style="flex:1;font-size:32px;">' + escapeHtml(d.name) + '</div>' +
+            '<button class="settings-btn" onclick="btPair(\'' + d.mac + '\')">Pair</button></div>'
+          ).join('');
+        }
+      } catch {
+        listDiv.innerHTML = '<div class="settings-row"><div class="settings-value">Scan failed</div></div>';
+      }
+      btn.textContent = 'Find Devices';
+      btn.disabled = false;
+    }
+
+    async function btPair(mac) {
+      showKenToast('Pairing...');
+      try {
+        const res = await fetch('/api/bluetooth/pair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mac }) });
+        const data = await res.json();
+        if (data.success) {
+          showKenToast('Paired successfully');
+          btLoadPaired();
+          document.getElementById('btScanResults').style.display = 'none';
+        } else {
+          showKenToast(data.error || 'Pairing failed');
+        }
+      } catch { showKenToast('Pairing failed'); }
+    }
+
+    async function btConnect(mac) {
+      showKenToast('Connecting...');
+      try {
+        const res = await fetch('/api/bluetooth/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mac }) });
+        const data = await res.json();
+        showKenToast(data.success ? 'Connected' : (data.error || 'Connection failed'));
+        btLoadPaired();
+      } catch { showKenToast('Connection failed'); }
+    }
+
+    async function btDisconnect(mac) {
+      try {
+        await fetch('/api/bluetooth/disconnect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mac }) });
+        showKenToast('Disconnected');
+        btLoadPaired();
+      } catch { showKenToast('Failed to disconnect'); }
+    }
+
+    function btForget(mac, name) {
+      showConfirmPopup('Forget ' + name + '?', 'This device will need to be paired again.', 'Forget', function() {
+        fetch('/api/bluetooth/forget', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mac }) })
+          .then(() => { showKenToast('Device forgotten'); btLoadPaired(); })
+          .catch(() => showKenToast('Failed to forget device'));
+      });
     }
 
     // Font size stepper

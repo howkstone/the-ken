@@ -402,6 +402,56 @@ async function pollForCalls() {
   }
 }
 
+// ===== BLUETOOTH HELPERS =====
+function parseBtDevices(stdout, res) {
+  const { execFile } = require('child_process');
+  const lines = stdout.trim().split('\n').filter(l => l.includes('Device'));
+  const devices = lines.map(l => {
+    const match = l.match(/Device\s+([0-9A-Fa-f:]{17})\s+(.+)/);
+    if (!match) return null;
+    return { mac: match[1], name: match[2].trim() };
+  }).filter(Boolean);
+  // Check connection status for each device
+  let pending = devices.length;
+  if (pending === 0) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ devices: [] }));
+    return;
+  }
+  devices.forEach(d => {
+    execFile('bluetoothctl', ['info', d.mac], { timeout: 3000 }, (err, info) => {
+      d.connected = (info || '').includes('Connected: yes');
+      d.paired = (info || '').includes('Paired: yes');
+      const typeMatch = (info || '').match(/Icon:\s*(\S+)/);
+      d.type = typeMatch ? typeMatch[1] : 'unknown';
+      pending--;
+      if (pending === 0) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ devices }));
+      }
+    });
+  });
+}
+
+async function syncBluetoothToCloud() {
+  try {
+    const { execFile } = require('child_process');
+    execFile('bluetoothctl', ['devices', 'Paired'], { timeout: 5000 }, async (err, stdout) => {
+      const src = err ? '' : (stdout || '');
+      const lines = src.trim().split('\n').filter(l => l.includes('Device'));
+      const devices = lines.map(l => {
+        const match = l.match(/Device\s+([0-9A-Fa-f:]{17})\s+(.+)/);
+        return match ? { mac: match[1], name: match[2].trim() } : null;
+      }).filter(Boolean);
+      await cloudFetch(`${CLOUD_API}/api/settings/${DEVICE_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bluetoothDevices: devices })
+      });
+    });
+  } catch {}
+}
+
 // Heartbeat — tell cloud we're online every 60s
 async function sendHeartbeat() {
   try {
@@ -567,6 +617,21 @@ async function pollForSettingsQueue() {
           fs.writeFileSync(path.join(__dirname, '.clear-passcode'), 'true');
           console.log('Remote PIN reset: passcode clear flag set');
           logToAudit('Remote PIN reset applied', {});
+          continue;
+        }
+        if (item.setting === 'bluetoothForget' && item.value) {
+          // Remote Bluetooth forget: unpair device by MAC address
+          const mac = item.value;
+          const { execFile } = require('child_process');
+          execFile('bluetoothctl', ['disconnect', mac], { timeout: 5000 }, () => {
+            execFile('bluetoothctl', ['untrust', mac], { timeout: 5000 }, () => {
+              execFile('bluetoothctl', ['remove', mac], { timeout: 5000 }, () => {
+                syncBluetoothToCloud();
+                logToAudit('Bluetooth forgotten (remote)', { mac });
+                console.log('Remote Bluetooth forget:', mac);
+              });
+            });
+          });
           continue;
         }
         if (item.setting && item.value !== undefined) {
@@ -1403,6 +1468,122 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ available, detail: output.trim() }));
     });
+    return;
+  }
+
+  // ===== BLUETOOTH MANAGEMENT =====
+  // List paired devices with connection status
+  if (req.method === 'GET' && req.url === '/api/bluetooth/devices') {
+    const { execFile } = require('child_process');
+    execFile('bluetoothctl', ['devices', 'Paired'], { timeout: 5000 }, (err, stdout) => {
+      if (err) {
+        // Fallback: try without 'Paired' arg (older bluetoothctl)
+        execFile('bluetoothctl', ['paired-devices'], { timeout: 5000 }, (err2, stdout2) => {
+          if (err2) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ devices: [] })); return; }
+          parseBtDevices(stdout2 || '', res);
+        });
+        return;
+      }
+      parseBtDevices(stdout || '', res);
+    });
+    return;
+  }
+
+  // Start Bluetooth scan (returns discovered devices after timeout)
+  if (req.method === 'POST' && req.url === '/api/bluetooth/scan') {
+    const { execFile, exec } = require('child_process');
+    // Power on and make discoverable first
+    execFile('bluetoothctl', ['power', 'on'], { timeout: 3000 }, () => {
+      // Start scan, wait 8 seconds, then collect results
+      const scanProc = exec('bluetoothctl --timeout 8 scan on', { timeout: 12000 }, () => {});
+      setTimeout(() => {
+        execFile('bluetoothctl', ['devices'], { timeout: 5000 }, (err, stdout) => {
+          if (err) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ devices: [] })); return; }
+          parseBtDevices(stdout || '', res);
+        });
+      }, 9000);
+    });
+    return;
+  }
+
+  // Pair with a device
+  if (req.method === 'POST' && req.url === '/api/bluetooth/pair') {
+    readBody(req).then(body => {
+      const { mac } = JSON.parse(body);
+      if (!mac || !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(mac)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid MAC address' })); return;
+      }
+      const { execFile } = require('child_process');
+      execFile('bluetoothctl', ['pair', mac], { timeout: 15000 }, (err, stdout, stderr) => {
+        const output = (stdout || '') + (stderr || '');
+        if (err && !output.includes('already exists')) {
+          res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: false, error: output.trim() || 'Pairing failed' })); return;
+        }
+        // Trust the device so it auto-connects
+        execFile('bluetoothctl', ['trust', mac], { timeout: 5000 }, () => {
+          execFile('bluetoothctl', ['connect', mac], { timeout: 10000 }, (connErr, connOut) => {
+            syncBluetoothToCloud();
+            logToAudit('Bluetooth paired', { mac });
+            res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: true }));
+          });
+        });
+      });
+    }).catch(() => { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid request' })); });
+    return;
+  }
+
+  // Connect to paired device
+  if (req.method === 'POST' && req.url === '/api/bluetooth/connect') {
+    readBody(req).then(body => {
+      const { mac } = JSON.parse(body);
+      if (!mac || !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(mac)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid MAC address' })); return;
+      }
+      const { execFile } = require('child_process');
+      execFile('bluetoothctl', ['connect', mac], { timeout: 10000 }, (err, stdout, stderr) => {
+        const output = (stdout || '') + (stderr || '');
+        const success = !err || output.includes('successful');
+        syncBluetoothToCloud();
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success, error: success ? null : output.trim() }));
+      });
+    }).catch(() => { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid request' })); });
+    return;
+  }
+
+  // Disconnect device
+  if (req.method === 'POST' && req.url === '/api/bluetooth/disconnect') {
+    readBody(req).then(body => {
+      const { mac } = JSON.parse(body);
+      if (!mac || !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(mac)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid MAC address' })); return;
+      }
+      const { execFile } = require('child_process');
+      execFile('bluetoothctl', ['disconnect', mac], { timeout: 5000 }, (err) => {
+        syncBluetoothToCloud();
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: true }));
+      });
+    }).catch(() => { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid request' })); });
+    return;
+  }
+
+  // Forget (unpair) device
+  if (req.method === 'POST' && req.url === '/api/bluetooth/forget') {
+    readBody(req).then(body => {
+      const { mac } = JSON.parse(body);
+      if (!mac || !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(mac)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid MAC address' })); return;
+      }
+      const { execFile } = require('child_process');
+      execFile('bluetoothctl', ['disconnect', mac], { timeout: 5000 }, () => {
+        execFile('bluetoothctl', ['untrust', mac], { timeout: 5000 }, () => {
+          execFile('bluetoothctl', ['remove', mac], { timeout: 5000 }, (err) => {
+            syncBluetoothToCloud();
+            logToAudit('Bluetooth forgotten', { mac });
+            res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: !err }));
+          });
+        });
+      });
+    }).catch(() => { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid request' })); });
     return;
   }
 
