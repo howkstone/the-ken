@@ -13,7 +13,7 @@
     "accessibility",
     "raspberry-pi"
   ],
-  "author": "Big Brain Company",
+  "author": "Big Brain Ltd",
   "license": "UNLICENSED",
   "dependencies": {
     "electron": "^28.0.0"
