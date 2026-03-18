@@ -17,14 +17,14 @@ BOOT_CONFIG="/boot/firmware/config.txt"
 [ ! -f "$BOOT_CONFIG" ] && BOOT_CONFIG="/boot/config.txt"
 
 # --- 1. Install the systemd service ---
-echo "[1/12] Installing ken.service..."
+echo "[1/14] Installing ken.service..."
 cp "$KEN_DIR/ken.service" /etc/systemd/system/ken.service
 systemctl daemon-reload
 systemctl enable ken.service
 echo "        Service installed and enabled."
 
 # --- 2. Hide the mouse cursor ---
-echo "[2/12] Installing unclutter (hide cursor)..."
+echo "[2/14] Installing unclutter (hide cursor)..."
 apt-get update -qq
 apt-get install -y -qq unclutter > /dev/null 2>&1
 if [ -f "$LXDE_AUTOSTART" ]; then
@@ -43,7 +43,7 @@ EOF
 echo "        Cursor hiding configured."
 
 # --- 3. Disable screen blanking / screensaver ---
-echo "[3/12] Disabling screen blanking..."
+echo "[3/14] Disabling screen blanking..."
 if [ -f "$LXDE_AUTOSTART" ]; then
     if ! grep -q "xset s off" "$LXDE_AUTOSTART"; then
         cat >> "$LXDE_AUTOSTART" << 'XSET'
@@ -68,7 +68,7 @@ fi
 echo "        Screen blanking disabled."
 
 # --- 4. Disable desktop panel and icons ---
-echo "[4/12] Disabling desktop panel and icons..."
+echo "[4/14] Disabling desktop panel and icons..."
 if [ -f "$LXDE_AUTOSTART" ]; then
     sed -i 's/^@lxpanel/#@lxpanel/' "$LXDE_AUTOSTART"
     sed -i 's/^@pcmanfm --desktop/#@pcmanfm --desktop/' "$LXDE_AUTOSTART"
@@ -82,7 +82,7 @@ fi
 echo "        Panel and icons disabled."
 
 # --- 5. Configure auto-login ---
-echo "[5/12] Configuring auto-login for user pi..."
+echo "[5/14] Configuring auto-login for user pi..."
 if [ -f "$LIGHTDM_CONF" ]; then
     if ! grep -q "^autologin-user=pi" "$LIGHTDM_CONF"; then
         sed -i '/^\[Seat:\*\]/a autologin-user=pi' "$LIGHTDM_CONF" 2>/dev/null || true
@@ -94,7 +94,7 @@ fi
 echo "        Auto-login configured."
 
 # --- 6. Enable OV5647 camera (CSI ribbon cable) ---
-echo "[6/12] Enabling camera (OV5647)..."
+echo "[6/14] Enabling camera (OV5647)..."
 if [ -f "$BOOT_CONFIG" ]; then
     if ! grep -q "^camera_auto_detect=1" "$BOOT_CONFIG"; then
         echo "camera_auto_detect=1" >> "$BOOT_CONFIG"
@@ -109,7 +109,7 @@ fi
 echo "        Camera configured."
 
 # --- 7. Firewall (ufw) ---
-echo "[7/12] Configuring firewall..."
+echo "[7/14] Configuring firewall..."
 apt-get install -y -qq ufw > /dev/null 2>&1
 ufw --force reset > /dev/null 2>&1
 ufw default deny incoming
@@ -126,7 +126,7 @@ ufw --force enable
 echo "        Firewall enabled (SSH/VNC via Tailscale only)."
 
 # --- 8. Disable USB mass storage ---
-echo "[8/12] Disabling USB mass storage..."
+echo "[8/14] Disabling USB mass storage..."
 # Block the usb-storage kernel module
 if ! grep -q "^blacklist usb-storage" /etc/modprobe.d/blacklist-usb-storage.conf 2>/dev/null; then
     echo "blacklist usb-storage" > /etc/modprobe.d/blacklist-usb-storage.conf
@@ -137,7 +137,7 @@ rmmod usb-storage 2>/dev/null || true
 echo "        USB mass storage disabled."
 
 # --- 9. Hardware watchdog ---
-echo "[9/12] Enabling hardware watchdog..."
+echo "[9/14] Enabling hardware watchdog..."
 apt-get install -y -qq watchdog > /dev/null 2>&1
 # Enable the BCM2835 hardware watchdog
 if ! grep -q "^dtparam=watchdog=on" "$BOOT_CONFIG"; then
@@ -155,7 +155,7 @@ systemctl start watchdog 2>/dev/null || true
 echo "        Hardware watchdog enabled (15s timeout)."
 
 # --- 10. Automatic security updates ---
-echo "[10/12] Configuring automatic security updates..."
+echo "[10/14] Configuring automatic security updates..."
 apt-get install -y -qq unattended-upgrades > /dev/null 2>&1
 # Enable automatic security updates only
 cat > /etc/apt/apt.conf.d/50unattended-upgrades << 'UNATTENDED'
@@ -174,7 +174,7 @@ AUTOUPGRADE
 echo "        Automatic security updates enabled."
 
 # --- 11. Restrict sudo and lock down pi user ---
-echo "[11/12] Restricting sudo access..."
+echo "[11/14] Restricting sudo access..."
 # Only allow pi to run specific commands with sudo (systemctl for ken.service)
 cat > /etc/sudoers.d/ken-kiosk << 'SUDOERS'
 # The Ken kiosk — restrict pi user sudo
@@ -196,7 +196,7 @@ visudo -c -f /etc/sudoers.d/ken-kiosk > /dev/null 2>&1 || {
 echo "        Sudo restricted to ken.service and reboot only."
 
 # --- 12. SSH hardening ---
-echo "[12/12] Hardening SSH..."
+echo "[12/14] Hardening SSH..."
 SSHD_CONFIG="/etc/ssh/sshd_config"
 if [ -f "$SSHD_CONFIG" ]; then
     # Disable password auth (key-only)
@@ -210,9 +210,77 @@ if [ -f "$SSHD_CONFIG" ]; then
     # Set login grace time and max auth tries
     sed -i 's/^#*LoginGraceTime.*/LoginGraceTime 30/' "$SSHD_CONFIG"
     sed -i 's/^#*MaxAuthTries.*/MaxAuthTries 3/' "$SSHD_CONFIG"
-    systemctl restart sshd 2>/dev/null || true
+    # L9: Validate sshd config before restarting
+    if sshd -t 2>/dev/null; then
+        systemctl restart sshd
+    else
+        echo "        WARNING: sshd config invalid, not restarting"
+    fi
 fi
 echo "        SSH hardened (key-only, no root, pi user only)."
+
+# --- 13. Filesystem hardening (M17) ---
+echo "[13/14] Filesystem hardening..."
+# Mount /tmp with noexec,nosuid
+mount -o remount,noexec,nosuid /tmp 2>/dev/null || true
+if ! grep -q "^tmpfs.*/tmp.*noexec" /etc/fstab 2>/dev/null; then
+    echo "tmpfs /tmp tmpfs defaults,noexec,nosuid 0 0" >> /etc/fstab
+fi
+# Mount /dev/shm with noexec,nosuid
+mount -o remount,noexec,nosuid /dev/shm 2>/dev/null || true
+if ! grep -q "^tmpfs.*/dev/shm.*noexec" /etc/fstab 2>/dev/null; then
+    echo "tmpfs /dev/shm tmpfs defaults,noexec,nosuid 0 0" >> /etc/fstab
+fi
+# Disable core dumps
+if ! grep -q "^\* hard core 0" /etc/security/limits.conf 2>/dev/null; then
+    echo "* hard core 0" >> /etc/security/limits.conf
+fi
+# Set restrictive umask (027) in login.defs
+if [ -f /etc/login.defs ]; then
+    sed -i 's/^UMASK.*/UMASK 027/' /etc/login.defs
+fi
+echo "        Filesystem hardened (noexec tmp/shm, no core dumps, umask 027)."
+
+# --- 14. Disable kiosk escape via keyboard (L8) ---
+echo "[14/14] Disabling kiosk escape shortcuts..."
+# Mask virtual console getty services (keep tty1 for X session)
+for i in 2 3 4 5 6; do
+    systemctl mask getty@tty${i}.service 2>/dev/null || true
+done
+# Create minimal Openbox config that disables all keyboard shortcuts
+mkdir -p /home/pi/.config/openbox
+cat > /home/pi/.config/openbox/rc.xml << 'OPENBOX'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <keyboard>
+    <!-- All keyboard shortcuts disabled for kiosk mode -->
+  </keyboard>
+  <mouse>
+    <context name="Frame">
+      <mousebind button="Left" action="Press">
+        <action name="Focus"/>
+        <action name="Raise"/>
+      </mousebind>
+    </context>
+  </mouse>
+  <applications>
+    <application class="*">
+      <decor>no</decor>
+      <maximized>yes</maximized>
+    </application>
+  </applications>
+</openbox_config>
+OPENBOX
+chown pi:pi /home/pi/.config/openbox/rc.xml
+# Disable Ctrl+Alt+Backspace (X server kill)
+X_CONF_DIR="/etc/X11/xorg.conf.d"
+mkdir -p "$X_CONF_DIR"
+cat > "$X_CONF_DIR/99-no-zap.conf" << 'XCONF'
+Section "ServerFlags"
+    Option "DontZap" "true"
+EndSection
+XCONF
+echo "        Kiosk escape shortcuts disabled (VTs masked, keys stripped, no zap)."
 
 # --- Summary ---
 echo ""
@@ -231,7 +299,9 @@ echo "  USB storage:    disabled"
 echo "  Watchdog:       BCM2835 hardware (15s)"
 echo "  Auto-updates:   security patches only"
 echo "  Sudo:           restricted to ken.service"
-echo "  SSH:            key-only, no root, pi only"
+echo "  SSH:            key-only, no root, pi only (validated)"
+echo "  Filesystem:     noexec tmp/shm, no core dumps, umask 027"
+echo "  Kiosk escape:   VTs masked, shortcuts stripped, no zap"
 echo ""
 echo "  To start the service now without reboot:"
 echo "    sudo systemctl start ken.service"
