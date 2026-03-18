@@ -4075,6 +4075,128 @@ export default {
         }
       }
     } catch {} // Breach detection should never break the cron
+
+    // ===== DAILY SUMMARY EMAIL (8pm UTC) =====
+    // Runs within the 2-minute cron but only sends once per day
+    try {
+      const nowDate = new Date();
+      const utcHour = nowDate.getUTCHours();
+      const utcMinute = nowDate.getUTCMinutes();
+      const totalMinutes = utcHour * 60 + utcMinute;
+      // Check if between 19:50 and 20:10 UTC
+      if (totalMinutes >= 1190 && totalMinutes <= 1210) {
+        const summaryDate = nowDate.toISOString().slice(0, 10);
+        const sentKey = `daily-summary-sent:${summaryDate}`;
+        const alreadySent = await env.KEN_KV.get(sentKey);
+        if (!alreadySent) {
+          // Mark as sent immediately to prevent duplicate sends from parallel cron runs
+          await env.KEN_KV.put(sentKey, new Date().toISOString(), { expirationTtl: 86400 });
+
+          const dayStart = new Date(summaryDate + 'T00:00:00Z').getTime();
+          const nowMs = Date.now();
+
+          for (const deviceId of devices) {
+            try {
+              // Gather device data
+              const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
+              const userName = deviceInfo.userName || 'The Ken';
+              const hb = await env.KEN_KV.get(`heartbeat:${deviceId}`, 'json');
+              const lastTime = await env.KEN_KV.get(`heartbeat-time:${deviceId}`);
+              const isOnline = !!hb;
+              const lastSeen = hb ? (hb.lastSeen || null) : (lastTime || null);
+
+              // Calls today
+              const callHistoryData = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || {};
+              const allCalls = callHistoryData.calls || [];
+              const callsToday = allCalls.filter(c => c.timestamp && new Date(c.timestamp).getTime() >= dayStart);
+              const missedToday = callsToday.filter(c => c.status === 'missed').length;
+
+              // Messages received today (replies from device)
+              const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+              const messagesToday = history.filter(m => !m.isReply && m.sentAt && new Date(m.sentAt).getTime() >= dayStart && !m.deletedForEveryone).length;
+              const repliesToday = history.filter(m => m.isReply && m.sentAt && new Date(m.sentAt).getTime() >= dayStart && !m.deletedForEveryone).length;
+
+              // Unresolved medication alerts
+              const medAlerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+              const unresolvedMed = medAlerts.filter(a => !a.resolved);
+
+              // Format last seen
+              let lastSeenText = 'Unknown';
+              if (isOnline) {
+                lastSeenText = 'Online now';
+              } else if (lastSeen) {
+                const ago = Math.floor((nowMs - new Date(lastSeen).getTime()) / 60000);
+                if (ago < 60) lastSeenText = ago + ' minute' + (ago !== 1 ? 's' : '') + ' ago';
+                else if (ago < 1440) lastSeenText = Math.floor(ago / 60) + ' hour' + (Math.floor(ago / 60) !== 1 ? 's' : '') + ' ago';
+                else lastSeenText = Math.floor(ago / 1440) + ' day' + (Math.floor(ago / 1440) !== 1 ? 's' : '') + ' ago';
+              }
+
+              // Build status indicator
+              const statusDot = isOnline
+                ? '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#22C55E;margin-right:8px;"></span>'
+                : '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#EF4444;margin-right:8px;"></span>';
+
+              // Build med alerts section
+              let medSection = '';
+              if (unresolvedMed.length > 0) {
+                medSection = '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">' +
+                  '<span style="color:#EF4444;font-weight:500;">Medication alerts</span></td>' +
+                  '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;">' +
+                  '<span style="background:rgba(239,68,68,0.12);color:#EF4444;padding:4px 12px;border-radius:8px;font-weight:500;">' +
+                  unresolvedMed.length + ' unresolved</span></td></tr>';
+              }
+
+              const emailBody =
+                '<div style="background:#FFF;border:2px solid rgba(196,169,98,0.2);border-radius:12px;overflow:hidden;margin:16px 0;">' +
+                  '<div style="padding:16px 20px;background:rgba(196,169,98,0.08);border-bottom:1px solid rgba(196,169,98,0.15);">' +
+                    '<h2 style="font-family:\'Cormorant Garamond\',serif;font-weight:400;font-size:22px;margin:0;color:#1A1714;">' +
+                    sanitize(userName) + '</h2>' +
+                    '<p style="font-size:13px;color:#6B6459;margin:4px 0 0 0;">' + summaryDate + '</p>' +
+                  '</div>' +
+                  '<table style="width:100%;border-collapse:collapse;font-family:\'Jost\',sans-serif;font-size:15px;">' +
+                    '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">Status</td>' +
+                    '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;">' +
+                    statusDot + (isOnline ? '<span style="color:#22C55E;font-weight:500;">Online</span>' : '<span style="color:#EF4444;font-weight:500;">Offline</span>') +
+                    '</td></tr>' +
+                    '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">Last seen</td>' +
+                    '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;color:#6B6459;">' + lastSeenText + '</td></tr>' +
+                    '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">Calls today</td>' +
+                    '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;color:#6B6459;">' +
+                    callsToday.length + (missedToday > 0 ? ' <span style="color:#EF4444;">(' + missedToday + ' missed)</span>' : '') + '</td></tr>' +
+                    '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">Messages sent</td>' +
+                    '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;color:#6B6459;">' + messagesToday + '</td></tr>' +
+                    '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">Replies from device</td>' +
+                    '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;color:#6B6459;">' + repliesToday + '</td></tr>' +
+                    medSection +
+                  '</table>' +
+                '</div>' +
+                '<a href="https://theken.uk/portal/" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Open Portal</a>';
+
+              // Email all admin/carer users for this device (respecting preferences)
+              const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+              for (const key of allUsers.keys) {
+                try {
+                  const u = await env.KEN_KV.get(key.name, 'json');
+                  if (!u || !u.devices || !u.devices[deviceId]) continue;
+                  const uRole = u.devices[deviceId].role;
+                  if (uRole !== 'admin' && uRole !== 'carer') continue;
+                  // Respect emailNotifications.dailySummary preference (default: true)
+                  if (u.emailNotifications && u.emailNotifications.dailySummary === false) continue;
+                  // Also respect notif-prefs timing=off as a global email opt-out
+                  const notifPrefs = await env.KEN_KV.get(`notif-prefs:${u.email}`, 'json');
+                  if (notifPrefs && notifPrefs.timing === 'off') continue;
+                  await sendEmail(env, u.email,
+                    'Daily Summary \u2014 The Ken',
+                    'Daily Summary',
+                    emailBody
+                  );
+                } catch {}
+              }
+            } catch {} // Continue to next device on error
+          }
+        }
+      }
+    } catch {} // Daily summary should never break the cron
   },
 };
 
