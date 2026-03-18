@@ -13,12 +13,9 @@ binding = "KEN_PII"
 id = "ccf0daf934334ef087b46231014bb815"
 
 # R2 bucket for media (photos, voicemails, video)
-# Enable R2 in Cloudflare dashboard first, then create bucket:
-#   npx wrangler r2 bucket create ken-media
-# Then uncomment:
-# [[r2_buckets]]
-# binding = "KEN_MEDIA"
-# bucket_name = "ken-media"
+[[r2_buckets]]
+binding = "KEN_MEDIA"
+bucket_name = "ken-media"
 
 [triggers]
 crons = ["*/2 * * * *"]
