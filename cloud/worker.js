@@ -285,7 +285,7 @@ export default {
 
     // ===== DEVICE AUTHENTICATION MIDDLEWARE =====
     // All device-scoped endpoints require either a valid device API key or user session
-    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts|export|groups)\/([A-Za-z0-9-]+)/);
+    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts|export|groups|escalation)\/([A-Za-z0-9-]+)/);
     if (deviceScopeMatch) {
       const scopedDeviceId = deviceScopeMatch[1];
       // Public endpoints exempt from auth (QR code contact form, feedback, heartbeat)
@@ -3842,6 +3842,118 @@ export default {
       });
     }
 
+    // ===== ESCALATION WORKFLOW =====
+    // GET /api/escalation/{deviceId} — return escalation config
+    if (request.method === 'GET' && path.match(/^\/api\/escalation\/[\w-]+$/) && !path.includes('/active') && !path.includes('/acknowledge')) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!userRole || !['admin', 'carer', 'hq'].includes(userRole)) return json({ error: 'Insufficient permissions' }, 403);
+      const config = await env.KEN_KV.get(`escalation-config:${deviceId}`, 'json');
+      if (config) return json(config);
+      // Return default config
+      return json({
+        enabled: true,
+        triggers: {
+          deviceOffline: { enabled: true, delayMinutes: 5 },
+          missedMedication: { enabled: true, delayMinutes: 0 },
+          missedCall: { enabled: false, delayMinutes: 0 }
+        },
+        tiers: [
+          { role: 'carer', delayMinutes: 0, method: 'email' },
+          { role: 'admin', delayMinutes: 15, method: 'email' },
+          { role: 'hq', delayMinutes: 45, method: 'email' }
+        ]
+      });
+    }
+
+    // POST /api/escalation/{deviceId} — save escalation config
+    if (request.method === 'POST' && path.match(/^\/api\/escalation\/[\w-]+$/) && !path.includes('/acknowledge')) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!userRole || !['admin', 'carer', 'hq'].includes(userRole)) return json({ error: 'Insufficient permissions' }, 403);
+      try {
+        const body = await request.json();
+        const config = {
+          enabled: !!body.enabled,
+          triggers: {
+            deviceOffline: {
+              enabled: !!(body.triggers && body.triggers.deviceOffline && body.triggers.deviceOffline.enabled),
+              delayMinutes: (body.triggers && body.triggers.deviceOffline && typeof body.triggers.deviceOffline.delayMinutes === 'number') ? body.triggers.deviceOffline.delayMinutes : 5
+            },
+            missedMedication: {
+              enabled: !!(body.triggers && body.triggers.missedMedication && body.triggers.missedMedication.enabled),
+              delayMinutes: (body.triggers && body.triggers.missedMedication && typeof body.triggers.missedMedication.delayMinutes === 'number') ? body.triggers.missedMedication.delayMinutes : 0
+            },
+            missedCall: {
+              enabled: !!(body.triggers && body.triggers.missedCall && body.triggers.missedCall.enabled),
+              delayMinutes: (body.triggers && body.triggers.missedCall && typeof body.triggers.missedCall.delayMinutes === 'number') ? body.triggers.missedCall.delayMinutes : 0
+            }
+          },
+          tiers: Array.isArray(body.tiers) ? body.tiers.slice(0, 5).map(t => ({
+            role: ['carer', 'admin', 'hq'].includes(t.role) ? t.role : 'carer',
+            delayMinutes: typeof t.delayMinutes === 'number' ? t.delayMinutes : 0,
+            method: t.method === 'email' ? 'email' : 'email'
+          })) : [
+            { role: 'carer', delayMinutes: 0, method: 'email' },
+            { role: 'admin', delayMinutes: 15, method: 'email' },
+            { role: 'hq', delayMinutes: 45, method: 'email' }
+          ]
+        };
+        await env.KEN_KV.put(`escalation-config:${deviceId}`, JSON.stringify(config));
+        await logAudit(env, deviceId, auth.user.email, 'Updated escalation config', config);
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // POST /api/escalation/{deviceId}/acknowledge — acknowledge an active escalation
+    if (request.method === 'POST' && path.match(/^\/api\/escalation\/[\w-]+\/acknowledge$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!userRole) return json({ error: 'Insufficient permissions' }, 403);
+      try {
+        const body = await request.json();
+        const triggerType = body.triggerType;
+        if (!triggerType) return json({ error: 'triggerType required' }, 400);
+        const escKey = `escalation-active:${deviceId}:${triggerType}`;
+        const active = await env.KEN_KV.get(escKey, 'json');
+        if (!active) return json({ error: 'No active escalation found' }, 404);
+        active.acknowledged = true;
+        active.acknowledgedBy = auth.user.email;
+        active.acknowledgedAt = new Date().toISOString();
+        await env.KEN_KV.put(escKey, JSON.stringify(active), { expirationTtl: 86400 });
+        await logAudit(env, deviceId, auth.user.email, 'Acknowledged escalation', { triggerType });
+        return json({ success: true });
+      } catch {
+        return json({ error: 'Invalid request' }, 400);
+      }
+    }
+
+    // GET /api/escalation/{deviceId}/active — return active unacknowledged escalations
+    if (request.method === 'GET' && path.match(/^\/api\/escalation\/[\w-]+\/active$/)) {
+      const deviceId = path.split('/')[3];
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      const userRole = getUserRole(auth.user, deviceId);
+      if (!userRole) return json({ error: 'Insufficient permissions' }, 403);
+      const triggerTypes = ['deviceOffline', 'missedMedication', 'missedCall'];
+      const active = [];
+      for (const tt of triggerTypes) {
+        const esc = await env.KEN_KV.get(`escalation-active:${deviceId}:${tt}`, 'json');
+        if (esc && !esc.acknowledged) {
+          active.push(esc);
+        }
+      }
+      return json({ escalations: active });
+    }
+
     return new Response('Not found', { status: 404 });
   },
 
@@ -3909,6 +4021,120 @@ export default {
         // Mark alert as sent
         alertSettings.lastAlertSent = new Date().toISOString();
         await env.KEN_KV.put(`offline-alerts:${deviceId}`, JSON.stringify(alertSettings));
+      } catch {
+        // Continue to next device on error
+      }
+    }
+
+    // ===== ESCALATION WORKFLOW PROCESSING =====
+    for (const deviceId of devices) {
+      try {
+        const escConfig = await env.KEN_KV.get(`escalation-config:${deviceId}`, 'json');
+        if (!escConfig || !escConfig.enabled) continue;
+        const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
+        const deviceName = deviceInfo.userName || 'The Ken';
+        const escNow = Date.now();
+
+        // Check each trigger
+        const triggerChecks = [];
+
+        // 1. Device offline trigger
+        if (escConfig.triggers.deviceOffline && escConfig.triggers.deviceOffline.enabled) {
+          const hb = await env.KEN_KV.get(`heartbeat:${deviceId}`, 'json');
+          if (!hb) {
+            const lastTime = await env.KEN_KV.get(`heartbeat-time:${deviceId}`);
+            if (lastTime) {
+              const offlineMin = Math.floor((escNow - new Date(lastTime).getTime()) / 60000);
+              if (offlineMin >= escConfig.triggers.deviceOffline.delayMinutes) {
+                triggerChecks.push({ type: 'deviceOffline', message: deviceName + ' has been offline for ' + offlineMin + ' minutes' });
+              }
+            }
+          }
+        }
+
+        // 2. Missed medication trigger
+        if (escConfig.triggers.missedMedication && escConfig.triggers.missedMedication.enabled) {
+          const medAlerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+          const unresolved = medAlerts.filter(a => !a.resolved && a.timestamp && (escNow - new Date(a.timestamp).getTime()) > (escConfig.triggers.missedMedication.delayMinutes || 0) * 60000);
+          if (unresolved.length > 0) {
+            triggerChecks.push({ type: 'missedMedication', message: unresolved.length + ' missed medication reminder' + (unresolved.length > 1 ? 's' : '') + ' for ' + deviceName });
+          }
+        }
+
+        // 3. Missed call trigger
+        if (escConfig.triggers.missedCall && escConfig.triggers.missedCall.enabled) {
+          const callData = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || {};
+          const calls = callData.calls || [];
+          const recentMissed = calls.filter(c => c.status === 'missed' && c.timestamp && (escNow - new Date(c.timestamp).getTime()) < 3600000 && (escNow - new Date(c.timestamp).getTime()) > (escConfig.triggers.missedCall.delayMinutes || 0) * 60000);
+          if (recentMissed.length > 0) {
+            triggerChecks.push({ type: 'missedCall', message: recentMissed.length + ' missed call' + (recentMissed.length > 1 ? 's' : '') + ' for ' + deviceName });
+          }
+        }
+
+        // Process each triggered condition through escalation tiers
+        for (const trigger of triggerChecks) {
+          const escKey = `escalation-active:${deviceId}:${trigger.type}`;
+          let active = await env.KEN_KV.get(escKey, 'json');
+
+          if (active && active.acknowledged) continue; // Already acknowledged
+
+          if (!active) {
+            // Create new escalation
+            active = {
+              triggerType: trigger.type,
+              triggeredAt: new Date().toISOString(),
+              currentTier: 0,
+              acknowledged: false,
+              acknowledgedBy: null,
+              acknowledgedAt: null,
+              lastNotifiedTier: -1,
+              message: trigger.message
+            };
+          }
+
+          // Determine which tier should be notified based on elapsed time
+          const elapsedMin = Math.floor((escNow - new Date(active.triggeredAt).getTime()) / 60000);
+          let targetTier = 0;
+          for (let i = escConfig.tiers.length - 1; i >= 0; i--) {
+            if (elapsedMin >= escConfig.tiers[i].delayMinutes) {
+              targetTier = i;
+              break;
+            }
+          }
+
+          // Send notification if we've reached a new tier
+          if (targetTier > active.lastNotifiedTier) {
+            const tier = escConfig.tiers[targetTier];
+            active.currentTier = targetTier;
+            active.lastNotifiedTier = targetTier;
+
+            // Find users with the tier's role for this device
+            try {
+              const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+              for (const key of allUsers.keys) {
+                const u = await env.KEN_KV.get(key.name, 'json');
+                if (!u || !u.devices) continue;
+                const uRole = getUserRole(u, deviceId);
+                if (!uRole) continue;
+                // Match tier role: 'hq' matches hq, 'admin' matches admin, 'carer' matches carer
+                if (uRole === tier.role || (tier.role === 'hq' && u.globalRole === 'hq')) {
+                  const tierLabel = 'Tier ' + (targetTier + 1) + ' (' + tier.role + ')';
+                  await sendEmail(env, u.email,
+                    'Escalation: ' + trigger.message + ' \u2014 The Ken',
+                    'Escalation Alert \u2014 ' + tierLabel,
+                    '<p style="color:#6B6459;line-height:1.7;"><strong>' + sanitize(trigger.message) + '</strong></p>' +
+                    '<p style="color:#6B6459;line-height:1.7;">This is a <strong>' + tierLabel + '</strong> escalation notification. The issue has been active for <strong>' + elapsedMin + ' minutes</strong>.</p>' +
+                    '<p style="color:#6B6459;line-height:1.7;">Please log in to the portal to acknowledge and resolve.</p>' +
+                    '<a href="https://theken.uk/portal/" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Open Portal</a>'
+                  );
+                }
+              }
+            } catch {}
+          }
+
+          // Store escalation state (TTL 24h so stale escalations auto-expire)
+          await env.KEN_KV.put(escKey, JSON.stringify(active), { expirationTtl: 86400 });
+        }
       } catch {
         // Continue to next device on error
       }
