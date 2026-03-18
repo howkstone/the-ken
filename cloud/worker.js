@@ -26,7 +26,25 @@ async function checkRateLimit(env, request, action, maxAttempts, windowSeconds) 
 // ===== SECURITY: INPUT SANITISATION =====
 function sanitize(str) {
   if (typeof str !== 'string') return str;
-  return str.replace(/<[^>]*>/g, '').trim();
+  return str
+    .slice(0, 10000)
+    .replace(/<[^>]*>/g, '')
+    .replace(/javascript\s*:/gi, '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;')
+    .trim();
+}
+
+// ===== SECURITY: HTML ESCAPING (for template output) =====
+function escapeHtml(str) {
+  if (typeof str !== 'string') return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
 }
 
 // ===== SECURITY: REQUEST SIZE LIMIT =====
@@ -40,8 +58,8 @@ const MAX_SCREENSHOT_BASE64 = 200 * 1024; // 200KB for screenshots
 const SENSITIVE_FIELDS = ['gp', 'medications', 'allergies', 'conditions', 'careNotes', 'nhsNumber', 'keySafeCode', 'nextOfKin', 'dob'];
 
 async function getEncryptionKey(env) {
-  // Use a stable key derived from a secret. In production, use env.ENCRYPTION_KEY secret.
-  const keyMaterial = env.ENCRYPTION_KEY || 'ken-default-encryption-key-2026';
+  const keyMaterial = env.ENCRYPTION_KEY;
+  if (!keyMaterial) throw new Error('ENCRYPTION_KEY secret not configured — set via `wrangler secret put ENCRYPTION_KEY`');
   const encoder = new TextEncoder();
   const rawKey = await crypto.subtle.digest('SHA-256', encoder.encode(keyMaterial));
   return crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['encrypt', 'decrypt']);
@@ -111,7 +129,8 @@ const RETENTION_PERIODS = {
 };
 
 async function getPiiKey(env) {
-  const keyMaterial = env.PII_KEY || 'ken-pii-default-key-2026';
+  const keyMaterial = env.PII_KEY;
+  if (!keyMaterial) throw new Error('PII_KEY secret not configured — set via `wrangler secret put PII_KEY`');
   const encoder = new TextEncoder();
   const rawKey = await crypto.subtle.digest('SHA-256', encoder.encode(keyMaterial));
   return crypto.subtle.importKey('raw', rawKey, 'AES-GCM', false, ['encrypt', 'decrypt']);
@@ -1976,9 +1995,21 @@ export default {
           return json({ error: 'Device authentication required' }, 401);
         }
       } else {
-        // First heartbeat — generate and return the device key
+        // First heartbeat — require a valid one-time provision token
+        const provisionToken = request.headers.get('X-Ken-Provision-Token');
+        if (!provisionToken) {
+          return json({ error: 'Provision token required for new device registration. Generate one via POST /api/admin/provision-token (HQ role).' }, 403);
+        }
+        const tokenData = await env.KEN_KV.get(`provision-token:${provisionToken}`, 'json');
+        if (!tokenData) {
+          return json({ error: 'Invalid or expired provision token' }, 403);
+        }
+        // Consume the token (one-time use)
+        await env.KEN_KV.delete(`provision-token:${provisionToken}`);
+        // Generate and return the device key
         deviceApiKey = crypto.randomUUID() + '-' + crypto.randomUUID();
         await env.KEN_KV.put(`device-key:${deviceId}`, deviceApiKey);
+        await logAudit(env, deviceId, tokenData.createdBy, 'Device provisioned via token', { label: tokenData.label });
       }
       // Heartbeat with lastSeen (TTL 600s = 10 min window with 5 min poll)
       await env.KEN_KV.put(`heartbeat:${deviceId}`, JSON.stringify({ online: true, lastSeen: now }), { expirationTtl: 600 });
@@ -3462,6 +3493,26 @@ export default {
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
+    // ===== DEVICE PROVISIONING TOKENS (HQ-only) =====
+    // One-time tokens required for first heartbeat from unknown devices
+    if (request.method === 'POST' && path === '/api/admin/provision-token') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'hq') return json({ error: 'HQ access required' }, 403);
+      try {
+        const body = await request.json();
+        const label = sanitize(body.label || 'unnamed');
+        const token = 'prov-' + crypto.randomUUID();
+        await env.KEN_KV.put(`provision-token:${token}`, JSON.stringify({
+          createdBy: auth.user.email,
+          label,
+          createdAt: new Date().toISOString(),
+        }), { expirationTtl: 86400 }); // 24-hour TTL
+        await logAudit(env, 'system', auth.user.email, 'Provision token created', { label });
+        return json({ success: true, token, expiresIn: '24 hours' });
+      } catch (e) { return json({ error: 'Failed to create provision token: ' + e.message }, 500); }
+    }
+
     // ===== DEVICE DECOMMISSION (GDPR-compliant tokenised cascade) =====
     if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+\/decommission$/)) {
       const deviceId = path.split('/')[3];
@@ -4424,12 +4475,14 @@ function feedbackViewerHTML(deviceId) {
 </head>
 <body>
   <h1>Feedback</h1>
-  <div class="subtitle">Device: ${deviceId}</div>
+  <div class="subtitle">Device: ${escapeHtml(deviceId)}</div>
   <div id="feedbackList"><div class="empty">Loading...</div></div>
   <script>
+    function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;'); }
+    function escAttr(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
     async function load() {
       try {
-        const resp = await fetch('/api/feedback/${deviceId}');
+        const resp = await fetch('/api/feedback/${escapeHtml(deviceId)}');
         const data = await resp.json();
         const list = document.getElementById('feedbackList');
         if (!data.feedback || data.feedback.length === 0) {
@@ -4443,7 +4496,7 @@ function feedbackViewerHTML(deviceId) {
           let content = '';
           if (f.type === 'voice' && f.audio) {
             content = '<div class="item-text"><span class="voice-badge">Voice message</span></div>' +
-              '<div class="item-audio"><audio controls src="' + f.audio + '"></audio></div>';
+              '<div class="item-audio"><audio controls src="' + escAttr(f.audio) + '"></audio></div>';
           } else if (f.text) {
             content = '<div class="item-text">' + f.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>';
           } else if (f.rating) {
@@ -4451,35 +4504,35 @@ function feedbackViewerHTML(deviceId) {
           }
           let screenshotHtml = '';
           if (f.screenshot) {
-            screenshotHtml = '<div style="margin-top:8px;"><img src="' + f.screenshot + '" style="max-width:100%;border-radius:8px;border:1px solid rgba(196,169,98,0.2);" alt="Screenshot at time of feedback" /></div>';
+            screenshotHtml = '<div style="margin-top:8px;"><img src="' + escAttr(f.screenshot) + '" style="max-width:100%;border-radius:8px;border:1px solid rgba(196,169,98,0.2);" alt="Screenshot at time of feedback" /></div>';
           }
           let recentScreensHtml = '';
           if (f.recentScreens && f.recentScreens.length > 0) {
             recentScreensHtml = '<div style="margin-top:12px;"><strong>Recent screens (' + f.recentScreens.length + '):</strong><div style="display:flex;gap:8px;overflow-x:auto;padding:8px 0;">' +
               f.recentScreens.map(function(s) {
-                return '<div style="flex-shrink:0;text-align:center;"><img src="' + s.frame + '" style="height:200px;border:1px solid #ccc;border-radius:4px;" /><div style="font-size:11px;color:#666;margin-top:4px;">' + s.screen + ' — ' + new Date(s.timestamp).toLocaleTimeString() + '</div></div>';
+                return '<div style="flex-shrink:0;text-align:center;"><img src="' + escAttr(s.frame) + '" style="height:200px;border:1px solid #ccc;border-radius:4px;" /><div style="font-size:11px;color:#666;margin-top:4px;">' + esc(s.screen) + ' — ' + esc(new Date(s.timestamp).toLocaleTimeString()) + '</div></div>';
               }).join('') +
             '</div></div>';
           }
           let categoryHtml = '';
           if (f.category) {
-            categoryHtml = '<span class="category-badge">' + f.category + '</span>';
+            categoryHtml = '<span class="category-badge">' + esc(f.category) + '</span>';
           }
-          const statusClass = f.status ? 'status-' + f.status : 'status-open';
-          const statusLabel = f.status ? f.status.replace('-', ' ') : 'open';
+          const statusClass = f.status ? 'status-' + esc(f.status) : 'status-open';
+          const statusLabel = f.status ? esc(f.status.replace('-', ' ')) : 'open';
           const statusHtml = '<span class="status-badge ' + statusClass + '">' + statusLabel + '</span>';
           const replyCount = f.replies ? f.replies.length : 0;
           const replyHtml = replyCount > 0 ? '<span class="reply-count">' + replyCount + ' repl' + (replyCount === 1 ? 'y' : 'ies') + '</span>' : '';
-          const submitter = f.submittedBy ? ' (' + f.submittedBy.email + ')' : '';
+          const submitter = f.submittedBy ? ' (' + esc(f.submittedBy.email) + ')' : '';
           return '<div class="item">' +
             '<div class="item-meta">' +
-              '<span class="item-from" style="margin-bottom:0;">' + (f.from || 'Unknown') + submitter + '</span>' +
+              '<span class="item-from" style="margin-bottom:0;">' + esc(f.from || 'Unknown') + submitter + '</span>' +
               statusHtml + categoryHtml + replyHtml +
             '</div>' +
             content +
             screenshotHtml +
             recentScreensHtml +
-            '<div class="item-time">' + timeStr + (f.id ? ' &middot; #' + f.id.slice(0,8) : '') + '</div>' +
+            '<div class="item-time">' + esc(timeStr) + (f.id ? ' &middot; #' + esc(f.id.slice(0,8)) : '') + '</div>' +
             '</div>';
         }).join('');
       } catch {
