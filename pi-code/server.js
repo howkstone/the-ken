@@ -1490,18 +1490,22 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Start Bluetooth scan (returns discovered devices after timeout)
+  // Only callable from localhost (device UI) — pairing enabled only during scan window
   if (req.method === 'POST' && req.url === '/api/bluetooth/scan') {
     const { execFile, exec } = require('child_process');
-    // Power on and make discoverable first
     execFile('bluetoothctl', ['power', 'on'], { timeout: 3000 }, () => {
-      // Start scan, wait 8 seconds, then collect results
-      const scanProc = exec('bluetoothctl --timeout 8 scan on', { timeout: 12000 }, () => {});
-      setTimeout(() => {
-        execFile('bluetoothctl', ['devices'], { timeout: 5000 }, (err, stdout) => {
-          if (err) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ devices: [] })); return; }
-          parseBtDevices(stdout || '', res);
-        });
-      }, 9000);
+      // Temporarily enable pairing for the scan window only
+      execFile('bluetoothctl', ['pairable', 'on'], { timeout: 2000 }, () => {
+        const scanProc = exec('bluetoothctl --timeout 8 scan on', { timeout: 12000 }, () => {});
+        setTimeout(() => {
+          // Disable pairing again immediately after scan
+          execFile('bluetoothctl', ['pairable', 'off'], { timeout: 2000 }, () => {});
+          execFile('bluetoothctl', ['devices'], { timeout: 5000 }, (err, stdout) => {
+            if (err) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ devices: [] })); return; }
+            parseBtDevices(stdout || '', res);
+          });
+        }, 9000);
+      });
     });
     return;
   }

@@ -263,6 +263,8 @@ Requires=bluetooth.service
 [Service]
 Type=simple
 ExecStartPre=/usr/bin/bluetoothctl power on
+ExecStartPre=/usr/bin/bluetoothctl discoverable off
+ExecStartPre=/usr/bin/bluetoothctl pairable off
 ExecStart=/usr/bin/bluetoothctl agent NoInputNoOutput
 ExecStartPost=/usr/bin/bluetoothctl default-agent
 Restart=on-failure
