@@ -2146,12 +2146,32 @@ export default {
         if (photo.length > MAX_PHOTO_BASE64 * 1.4) return json({ error: 'Photo too large (max 500KB)' }, 400);
         const photos = await env.KEN_KV.get(`photos:${deviceId}`, 'json') || [];
         if (photos.length >= 20) return json({ error: 'Maximum 20 photos' }, 400);
-        photos.push({
-          id: crypto.randomUUID(),
-          photo, // base64 data URL
-          caption: (caption || '').trim(),
-          uploadedAt: new Date().toISOString()
-        });
+        const photoId = crypto.randomUUID();
+        // If R2 binding exists, store image bytes in R2 and only metadata in KV
+        if (env.KEN_MEDIA) {
+          // Strip data URL prefix to get raw base64
+          const base64Data = photo.replace(/^data:image\/[^;]+;base64,/, '');
+          const binaryStr = atob(base64Data);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+          const r2Key = `photos/${deviceId}/${photoId}.jpg`;
+          await env.KEN_MEDIA.put(r2Key, bytes.buffer, {
+            httpMetadata: { contentType: 'image/jpeg' }
+          });
+          photos.push({
+            id: photoId,
+            r2Key,
+            caption: (caption || '').trim(),
+            uploadedAt: new Date().toISOString()
+          });
+        } else {
+          photos.push({
+            id: photoId,
+            photo, // base64 data URL
+            caption: (caption || '').trim(),
+            uploadedAt: new Date().toISOString()
+          });
+        }
         await env.KEN_KV.put(`photos:${deviceId}`, JSON.stringify(photos));
         const session = await getSession(request, env);
         await logAudit(env, deviceId, session ? session.email : 'device', 'Uploaded photo', { caption: (caption || '').trim() });
@@ -2164,7 +2184,14 @@ export default {
     if (request.method === 'GET' && path.match(/^\/api\/photos\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
       const photos = await env.KEN_KV.get(`photos:${deviceId}`, 'json') || [];
-      return json({ photos });
+      // For R2-backed photos, return a media URL instead of base64
+      const mapped = photos.map(p => {
+        if (p.r2Key) {
+          return { id: p.id, caption: p.caption, uploadedAt: p.uploadedAt, mediaUrl: `/api/media/${p.r2Key}` };
+        }
+        return p; // Legacy base64 photos returned as-is
+      });
+      return json({ photos: mapped });
     }
 
     if (request.method === 'DELETE' && path.match(/^\/api\/photos\/[\w-]+\/[\w-]+$/)) {
@@ -2176,6 +2203,11 @@ export default {
       const userRole = getUserRole(auth.user, deviceId);
       if (!hasPermission(userRole, 'edit:settings')) return json({ error: 'Insufficient permissions' }, 403);
       const photos = await env.KEN_KV.get(`photos:${deviceId}`, 'json') || [];
+      // Find photo to check for R2 key before filtering
+      const toDelete = photos.find(p => p.id === photoId);
+      if (toDelete && toDelete.r2Key && env.KEN_MEDIA) {
+        await env.KEN_MEDIA.delete(toDelete.r2Key);
+      }
       const filtered = photos.filter(p => p.id !== photoId);
       await env.KEN_KV.put(`photos:${deviceId}`, JSON.stringify(filtered));
       const session = await getSession(request, env);
@@ -2344,17 +2376,56 @@ export default {
         if (!from || !media) return json({ error: 'from and media required' }, 400);
         if (media.length > MAX_VOICEMAIL_BASE64 * 1.4) return json({ error: 'Voicemail too large (max 5MB)' }, 400);
         const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
-        voicemails.push({
-          id: crypto.randomUUID(),
-          from: from.trim(),
-          type: type || 'video',
-          media,
-          duration: duration || 0,
-          timestamp: timestamp || new Date().toISOString(),
-          played: false
-        });
-        // Keep max 20 voicemails (remove oldest)
-        while (voicemails.length > 20) voicemails.shift();
+        const vmId = crypto.randomUUID();
+        const vmType = type || 'video';
+        // If R2 binding exists, store media bytes in R2 and only metadata in KV
+        if (env.KEN_MEDIA) {
+          // Detect content type and extension from data URL or default by type
+          let contentType = 'video/webm';
+          let ext = 'webm';
+          const dataUrlMatch = media.match(/^data:([^;]+);base64,/);
+          if (dataUrlMatch) {
+            contentType = dataUrlMatch[1];
+            const extMap = { 'video/webm': 'webm', 'video/mp4': 'mp4', 'audio/webm': 'webm', 'audio/mp3': 'mp3', 'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/wav': 'wav' };
+            ext = extMap[contentType] || contentType.split('/')[1] || 'bin';
+          } else if (vmType === 'audio') {
+            contentType = 'audio/webm';
+          }
+          const base64Data = media.replace(/^data:[^;]+;base64,/, '');
+          const binaryStr = atob(base64Data);
+          const bytes = new Uint8Array(binaryStr.length);
+          for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+          const r2Key = `voicemails/${deviceId}/${vmId}.${ext}`;
+          await env.KEN_MEDIA.put(r2Key, bytes.buffer, {
+            httpMetadata: { contentType }
+          });
+          voicemails.push({
+            id: vmId,
+            from: from.trim(),
+            type: vmType,
+            r2Key,
+            duration: duration || 0,
+            timestamp: timestamp || new Date().toISOString(),
+            played: false
+          });
+        } else {
+          voicemails.push({
+            id: vmId,
+            from: from.trim(),
+            type: vmType,
+            media,
+            duration: duration || 0,
+            timestamp: timestamp || new Date().toISOString(),
+            played: false
+          });
+        }
+        // Keep max 20 voicemails (remove oldest, clean up R2 if needed)
+        while (voicemails.length > 20) {
+          const removed = voicemails.shift();
+          if (removed && removed.r2Key && env.KEN_MEDIA) {
+            await env.KEN_MEDIA.delete(removed.r2Key);
+          }
+        }
         await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
         // Clear the voicemail request signal
         await env.KEN_KV.delete(`voicemail-req:${deviceId}`);
@@ -2368,7 +2439,15 @@ export default {
     if (request.method === 'GET' && path.match(/^\/api\/voicemail\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
       const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
-      return json({ voicemails });
+      // For R2-backed voicemails, return a media URL instead of base64
+      const mapped = voicemails.map(v => {
+        if (v.r2Key) {
+          const { media, ...rest } = v; // strip any leftover media field
+          return { ...rest, mediaUrl: `/api/media/${v.r2Key}` };
+        }
+        return v; // Legacy base64 voicemails returned as-is
+      });
+      return json({ voicemails: mapped });
     }
 
     // Delete a voicemail
@@ -2381,6 +2460,11 @@ export default {
       const role = getUserRole(auth.user, deviceId);
       if (!role) return json({ error: 'Access denied' }, 403);
       const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+      // Find voicemail to check for R2 key before filtering
+      const toDelete = voicemails.find(v => v.id === vmId);
+      if (toDelete && toDelete.r2Key && env.KEN_MEDIA) {
+        await env.KEN_MEDIA.delete(toDelete.r2Key);
+      }
       const filtered = voicemails.filter(v => v.id !== vmId);
       await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(filtered));
       await logAudit(env, deviceId, auth.user.email, 'Deleted voicemail', { vmId });
@@ -3556,6 +3640,52 @@ export default {
       await env.KEN_KV.put(`check-ins:${deviceId}:${auth.user.email}`, JSON.stringify(filtered));
       await logAudit(env, deviceId, auth.user.email, 'Deleted check-in schedule', { checkInId });
       return json({ success: true });
+    }
+
+    // ===== MEDIA SERVING (R2) =====
+    // Serves photos and voicemails stored in R2 — requires authentication
+    if (request.method === 'GET' && path.startsWith('/api/media/')) {
+      // Authenticate: session cookie OR device key
+      const session = await getSession(request, env);
+      const deviceKey = request.headers.get('X-Ken-Device-Key');
+      let isDeviceAuthed = false;
+      if (!session && deviceKey) {
+        // Extract deviceId from the R2 key path (e.g., photos/{deviceId}/... or voicemails/{deviceId}/...)
+        const r2Key = path.slice('/api/media/'.length);
+        const keyParts = r2Key.split('/');
+        if (keyParts.length >= 2) {
+          const scopedDeviceId = keyParts[1];
+          const storedKey = await env.KEN_KV.get(`device-key:${scopedDeviceId}`);
+          isDeviceAuthed = storedKey && deviceKey === storedKey;
+        }
+      }
+      if (!session && !isDeviceAuthed) {
+        return json({ error: 'Not authenticated' }, 401);
+      }
+      if (!env.KEN_MEDIA) {
+        return json({ error: 'Media storage not configured' }, 503);
+      }
+      const r2Key = path.slice('/api/media/'.length);
+      if (!r2Key) return json({ error: 'Missing media key' }, 400);
+      const object = await env.KEN_MEDIA.get(r2Key);
+      if (!object) return json({ error: 'Media not found' }, 404);
+      // Determine content type from R2 metadata or file extension
+      let contentType = (object.httpMetadata && object.httpMetadata.contentType) || 'application/octet-stream';
+      if (contentType === 'application/octet-stream') {
+        const extMatch = r2Key.match(/\.(\w+)$/);
+        if (extMatch) {
+          const extTypes = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', webm: 'video/webm', mp4: 'video/mp4', mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav' };
+          contentType = extTypes[extMatch[1].toLowerCase()] || contentType;
+        }
+      }
+      return new Response(object.body, {
+        headers: {
+          'Content-Type': contentType,
+          'Cache-Control': 'private, max-age=3600',
+          'Access-Control-Allow-Origin': request.headers.get('Origin') || '*',
+          'Access-Control-Allow-Credentials': 'true'
+        }
+      });
     }
 
     return new Response('Not found', { status: 404 });
