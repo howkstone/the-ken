@@ -2656,6 +2656,11 @@
     <div class="slideshow-image" id="slideshowImgB"></div>
     <div class="slideshow-caption" id="slideshowCaption"></div>
     <div id="slideshowPauseIndicator" style="display:none;position:absolute;top:20px;right:20px;background:rgba(26,23,20,0.6);color:var(--cream);font-family:'Jost',sans-serif;font-weight:500;font-size:22px;padding:8px 20px;border-radius:12px;">Paused — tap to resume</div>
+    <!-- Idle clock display -->
+    <div id="idleClockDisplay" style="display:none;position:absolute;inset:0;background:var(--ink);flex-direction:column;align-items:center;justify-content:center;z-index:2;">
+      <div id="idleClockTime" style="font-family:'Cormorant Garamond',serif;font-weight:600;font-size:90px;color:var(--cream);line-height:1;"></div>
+      <div id="idleClockDate" style="font-family:'Jost',sans-serif;font-weight:500;font-size:36px;color:var(--gold);margin-top:16px;"></div>
+    </div>
   </div>
 
   <!-- ===== HOME SCREEN ===== -->
@@ -2712,7 +2717,7 @@
     </button>
     <button class="menu-item" onclick="menuNavTo('callHistory')">Recent Calls</button>
     <button class="menu-item" onclick="menuNavTo('contacts')">Contacts</button>
-    <button class="menu-item" onclick="menuNavTo('photos')">Photo Reel</button>
+    <button class="menu-item" onclick="menuNavTo('photos')">Family Photos</button>
     <button class="menu-item" onclick="menuNavTo('medical')">Medical Info</button>
     <button class="menu-item" onclick="menuNavTo('feedback')">Give Feedback</button>
     <button class="menu-item" onclick="menuNavTo('settings')" style="color:var(--mid);font-weight:400;">Settings</button>
@@ -3523,8 +3528,8 @@
     <div id="reminderConfirmMsg" style="display:none;font-size:36px;font-weight:600;color:var(--gold);margin:24px 0;"></div>
     <div class="reminder-notif-actions" id="reminderActions">
       <button class="answer-btn" onclick="reminderResponse('taken')" style="min-width:280px;min-height:100px;font-size:28px;background:var(--gold);color:var(--cream);border:none;">Taken</button>
-      <button class="reject-btn" onclick="reminderResponse('not-taken')" style="min-width:280px;min-height:100px;font-size:28px;background:rgba(100,100,100,0.1);color:var(--ink);border:3px solid var(--mid);">Not Taken</button>
-      <button class="reject-btn" onclick="reminderResponse('snoozed')" style="min-width:280px;min-height:80px;font-size:24px;background:rgba(196,169,98,0.1);color:var(--gold);border:3px solid var(--gold);">Snooze 5 Minutes</button>
+      <button class="reject-btn" onclick="reminderResponse('not-taken')" style="min-width:280px;min-height:100px;font-size:28px;background:rgba(100,100,100,0.1);color:var(--ink);border:3px solid var(--mid);">Skip</button>
+      <button class="reject-btn" onclick="reminderResponse('snoozed')" style="min-width:280px;min-height:80px;font-size:24px;background:rgba(196,169,98,0.1);color:var(--gold);border:3px solid var(--gold);">Remind me later</button>
     </div>
   </div>
 
@@ -5776,25 +5781,18 @@
         // Visual confirmation banner
         showSendConfirmation(confirmMsg);
 
-        // Audio confirmation — gentle chime + TTS
+        // Audio confirmation — single gentle high-pitched note (200ms)
         try {
           const actx = new (window.AudioContext || window.webkitAudioContext)();
+          const readVol = parseInt(localStorage.getItem('ken-read-volume') || '8') / 10;
           const g = actx.createGain();
           g.connect(actx.destination);
-          g.gain.setValueAtTime(0.15, actx.currentTime);
-          g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.8);
+          g.gain.setValueAtTime(readVol * 0.18, actx.currentTime);
+          g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 0.25);
           const o = actx.createOscillator();
           o.type = 'sine';
-          o.frequency.setValueAtTime(659, actx.currentTime); // E5
-          o.connect(g); o.start(); o.stop(actx.currentTime + 0.3);
-          const o2 = actx.createOscillator();
-          const g2 = actx.createGain();
-          g2.connect(actx.destination);
-          g2.gain.setValueAtTime(0.15, actx.currentTime + 0.15);
-          g2.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + 1.0);
-          o2.type = 'sine';
-          o2.frequency.setValueAtTime(784, actx.currentTime + 0.15); // G5
-          o2.connect(g2); o2.start(actx.currentTime + 0.15); o2.stop(actx.currentTime + 0.5);
+          o.frequency.setValueAtTime(1318.5, actx.currentTime); // E6 — higher than incoming chime
+          o.connect(g); o.start(); o.stop(actx.currentTime + 0.2);
         } catch {}
 
         // TTS
@@ -6294,10 +6292,90 @@
     document.addEventListener('click', resetIdleTimer);
     document.addEventListener('touchstart', resetIdleTimer);
 
-    // Mark as idle when idle timeout fires
+    // Mark as idle when idle timeout fires — and start idle clock
+    let idleClockInterval = null;
+    let idleClockShowingClock = true; // track whether clock or photo is showing
+    let idleClockPhotoTimer = null;
+
+    function updateIdleClock() {
+      const now = new Date();
+      const use12 = localStorage.getItem('ken-clock-format') === '12';
+      let h = now.getHours(), m = String(now.getMinutes()).padStart(2, '0');
+      if (use12) {
+        const ap = h >= 12 ? 'pm' : 'am';
+        h = h % 12 || 12;
+        document.getElementById('idleClockTime').textContent = h + ':' + m + ' ' + ap;
+      } else {
+        document.getElementById('idleClockTime').textContent = String(h).padStart(2, '0') + ':' + m;
+      }
+      const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+      document.getElementById('idleClockDate').textContent = days[now.getDay()] + ' ' + now.getDate() + ' ' + months[now.getMonth()];
+    }
+
+    function showIdleClock() {
+      const clockEl = document.getElementById('idleClockDisplay');
+      clockEl.style.display = 'flex';
+      document.getElementById('slideshowImgA').classList.remove('visible');
+      document.getElementById('slideshowImgB').classList.remove('visible');
+      document.getElementById('slideshowCaption').textContent = '';
+      idleClockShowingClock = true;
+    }
+
+    function hideIdleClock() {
+      document.getElementById('idleClockDisplay').style.display = 'none';
+      idleClockShowingClock = false;
+    }
+
+    function startIdleClockMode() {
+      if (slideshowActive) return; // already running photo reel manually
+      if (!isIdleOnHomeScreen()) return;
+      if (nightlightActive) return;
+
+      slideshowActive = true;
+      const overlay = document.getElementById('slideshowOverlay');
+      overlay.classList.add('active');
+
+      updateIdleClock();
+      showIdleClock();
+
+      // Update clock every minute
+      idleClockInterval = setInterval(updateIdleClock, 60000);
+
+      if (slideshowPhotos.length > 0) {
+        // Alternate: clock 10s -> photo 8s -> clock 10s -> ...
+        slideshowIndex = 0;
+        scheduleIdleAlternation();
+      }
+    }
+
+    function scheduleIdleAlternation() {
+      if (!slideshowActive) return;
+      if (idleClockShowingClock) {
+        // Currently showing clock — after 10s show a photo
+        idleClockPhotoTimer = setTimeout(() => {
+          if (!slideshowActive || slideshowPhotos.length === 0) return;
+          hideIdleClock();
+          showSlide(slideshowIndex);
+          slideshowIndex = (slideshowIndex + 1) % slideshowPhotos.length;
+          scheduleIdleAlternation();
+        }, 10000);
+      } else {
+        // Currently showing photo — after 8s show clock
+        idleClockPhotoTimer = setTimeout(() => {
+          if (!slideshowActive) return;
+          showIdleClock();
+          scheduleIdleAlternation();
+        }, SLIDE_INTERVAL);
+      }
+    }
+
     setInterval(() => {
       if (Date.now() - lastInteractionTime > IDLE_TIMEOUT) {
         wasIdle = true;
+        if (!slideshowActive && !nightlightActive) {
+          startIdleClockMode();
+        }
       }
     }, 5000);
 
@@ -6388,10 +6466,13 @@
       slideshowActive = false;
       slideshowPaused = false;
       if (slideshowInterval) { clearInterval(slideshowInterval); slideshowInterval = null; }
+      if (idleClockInterval) { clearInterval(idleClockInterval); idleClockInterval = null; }
+      if (idleClockPhotoTimer) { clearTimeout(idleClockPhotoTimer); idleClockPhotoTimer = null; }
       document.getElementById('slideshowOverlay').classList.remove('active');
       document.getElementById('slideshowImgA').classList.remove('visible');
       document.getElementById('slideshowImgB').classList.remove('visible');
       document.getElementById('slideshowPauseIndicator').style.display = 'none';
+      document.getElementById('idleClockDisplay').style.display = 'none';
     }
 
     // Photo reel is manual only — no idle auto-trigger (dementia users need to always see the phone)
