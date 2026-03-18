@@ -1,10 +1,10 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
 
-// Disable GPU acceleration on Pi (prevents crash)
+// Disable GPU hardware acceleration on Pi (use software rendering)
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');
-app.commandLine.appendSwitch('disable-software-rasterizer');
+app.commandLine.appendSwitch('disable-gpu-compositing');
 
 // Start the contact server for QR code add-contact feature
 try {
@@ -44,11 +44,17 @@ function createWindow() {
   win.loadFile('index.html');
   win.setMenuBarVisibility(false);
 
+  // Force window to front and focus
+  win.once('ready-to-show', () => {
+    win.show();
+    win.focus();
+    win.setAlwaysOnTop(true);
+    // Release always-on-top after 2 seconds so it doesn't block system dialogs
+    setTimeout(() => win.setAlwaysOnTop(false), 2000);
+  });
+
   // Expose window for screen capture (used by server.js for HQ remote viewing)
   global.kenWindow = win;
-
-  // Open DevTools in development (comment out in production)
-  // win.webContents.openDevTools();
 
   console.log('The Ken window loaded');
 }

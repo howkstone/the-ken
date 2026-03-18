@@ -3745,6 +3745,33 @@ export default {
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
+    // Cross-patient check-in overview (all devices for this carer)
+    if (request.method === 'GET' && path === '/api/carer/check-ins-overview') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'carer') return json({ error: 'Carer role required' }, 403);
+      const deviceIds = auth.user.carerDevices || [];
+      const overview = [];
+      for (const did of deviceIds) {
+        const info = await env.KEN_KV.get(`device:${did}`, 'json') || {};
+        const checkIns = await env.KEN_KV.get(`check-ins:${did}:${auth.user.email}`, 'json') || [];
+        for (const ci of checkIns) {
+          overview.push({
+            ...ci,
+            deviceId: did,
+            patientName: info.userName || 'Unknown',
+          });
+        }
+      }
+      // Sort by time
+      overview.sort((a, b) => {
+        const ta = a.preferredTime || a.time || '23:59';
+        const tb = b.preferredTime || b.time || '23:59';
+        return ta.localeCompare(tb);
+      });
+      return json({ checkIns: overview });
+    }
+
     // List check-ins for this carer + device
     if (request.method === 'GET' && path.match(/^\/api\/carer\/check-ins\/[\w-]+$/)) {
       const deviceId = path.split('/')[4];
