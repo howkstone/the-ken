@@ -50,6 +50,18 @@ XSET
     fi
 fi
 
+# Also add via user autostart .desktop file (works with X11 without LXDE)
+USER_AUTOSTART="/home/pi/.config/autostart"
+mkdir -p "$USER_AUTOSTART"
+cat > "$USER_AUTOSTART/disable-blanking.desktop" << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Disable Screen Blanking
+Exec=bash -c "sleep 3 && xset s off && xset -dpms && xset s noblank"
+X-GNOME-Autostart-enabled=true
+EOF
+echo "       Created disable-blanking.desktop autostart entry."
+
 # Also disable via lightdm config if available
 LIGHTDM_CONF="/etc/lightdm/lightdm.conf"
 if [ -f "$LIGHTDM_CONF" ]; then
@@ -109,7 +121,42 @@ if command -v raspi-config > /dev/null 2>&1; then
     echo "       raspi-config auto-login to desktop enabled."
 fi
 
-# --- 6. Summary ---
+# --- 6. Enable OV5647 camera (CSI ribbon cable) ---
+echo "[6/8] Enabling camera (OV5647 on CSI port)..."
+BOOT_CONFIG="/boot/firmware/config.txt"
+if [ ! -f "$BOOT_CONFIG" ]; then
+    BOOT_CONFIG="/boot/config.txt"
+fi
+
+if [ -f "$BOOT_CONFIG" ]; then
+    # Ensure camera auto-detect is enabled (Bookworm+)
+    if ! grep -q "^camera_auto_detect=1" "$BOOT_CONFIG"; then
+        echo "camera_auto_detect=1" >> "$BOOT_CONFIG"
+        echo "       Added camera_auto_detect=1 to config.txt."
+    else
+        echo "       camera_auto_detect already enabled."
+    fi
+
+    # Make sure legacy camera support isn't blocking (remove start_x if present)
+    if grep -q "^start_x=1" "$BOOT_CONFIG"; then
+        sed -i 's/^start_x=1/#start_x=1/' "$BOOT_CONFIG"
+        echo "       Commented out legacy start_x=1 (using libcamera instead)."
+    fi
+fi
+
+# Install libcamera tools if not present
+if ! command -v libcamera-still > /dev/null 2>&1; then
+    apt-get install -y -qq libcamera-apps > /dev/null 2>&1 || true
+    echo "       Installed libcamera-apps."
+else
+    echo "       libcamera-apps already installed."
+fi
+echo "       Camera configured. Test with: libcamera-still -o test.jpg"
+
+# --- 7. Install unclutter if not already ---
+# (moved cursor hiding to separate step for clarity)
+
+# --- 8. Summary ---
 echo ""
 echo "========================================="
 echo "  Setup complete!"
@@ -120,6 +167,7 @@ echo "  Cursor:         hidden via unclutter"
 echo "  Screen blank:   disabled"
 echo "  Panel/icons:    disabled"
 echo "  Auto-login:     configured for pi"
+echo "  Camera:         OV5647 enabled (libcamera)"
 echo ""
 echo "  To start the service now without reboot:"
 echo "    sudo systemctl start ken.service"

@@ -1342,6 +1342,45 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Camera capture — take a photo using libcamera
+  if (req.method === 'POST' && req.url === '/api/camera/capture') {
+    const { execFile } = require('child_process');
+    const photoPath = path.join(PHOTOS_DIR, 'capture-' + Date.now() + '.jpg');
+    execFile('libcamera-still', [
+      '-o', photoPath,
+      '--width', '1280', '--height', '720',
+      '--nopreview', '-t', '500'
+    ], { timeout: 10000 }, (err) => {
+      if (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Camera capture failed: ' + err.message }));
+        return;
+      }
+      // Return as base64 for easy display in Electron
+      try {
+        const imgData = fs.readFileSync(photoPath);
+        const base64 = imgData.toString('base64');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, path: photoPath, base64: 'data:image/jpeg;base64,' + base64 }));
+      } catch (readErr) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Could not read captured image' }));
+      }
+    });
+    return;
+  }
+
+  // Camera status — check if camera is available
+  if (req.method === 'GET' && req.url === '/api/camera/status') {
+    const { exec } = require('child_process');
+    exec('libcamera-still --list-cameras 2>&1', { timeout: 5000 }, (err, stdout) => {
+      const available = !err && stdout && !stdout.includes('No cameras');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ available, detail: (stdout || '').trim() }));
+    });
+    return;
+  }
+
   res.writeHead(404);
   res.end('Not found');
 });
