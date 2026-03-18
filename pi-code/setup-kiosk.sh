@@ -186,6 +186,8 @@ pi ALL=(ALL) NOPASSWD: /sbin/reboot
 pi ALL=(ALL) NOPASSWD: /sbin/shutdown
 pi ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
 pi ALL=(ALL) NOPASSWD: /usr/bin/nmcli
+pi ALL=(ALL) NOPASSWD: /usr/bin/bluetoothctl
+pi ALL=(ALL) NOPASSWD: /usr/bin/pactl
 SUDOERS
 chmod 440 /etc/sudoers.d/ken-kiosk
 # Validate sudoers syntax
@@ -241,8 +243,43 @@ if [ -f /etc/login.defs ]; then
 fi
 echo "        Filesystem hardened (noexec tmp/shm, no core dumps, umask 027)."
 
-# --- 14. Disable kiosk escape via keyboard (L8) ---
-echo "[14/14] Disabling kiosk escape shortcuts..."
+# --- 14. Bluetooth agent for unattended pairing ---
+echo "[14/15] Setting up Bluetooth agent..."
+apt-get install -y -qq bluez pulseaudio-module-bluetooth > /dev/null 2>&1 || true
+# Enable Bluetooth service
+systemctl enable bluetooth
+systemctl start bluetooth 2>/dev/null || true
+# Power on Bluetooth adapter at boot
+if ! grep -q "AutoEnable=true" /etc/bluetooth/main.conf 2>/dev/null; then
+    sed -i 's/^#*AutoEnable.*/AutoEnable=true/' /etc/bluetooth/main.conf 2>/dev/null || true
+fi
+# Create a systemd service for the Bluetooth agent (auto-accepts pairing)
+cat > /etc/systemd/system/bt-agent.service << 'BTAGENT'
+[Unit]
+Description=Bluetooth Agent (NoInputNoOutput for kiosk)
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/bluetoothctl power on
+ExecStart=/usr/bin/bluetoothctl agent NoInputNoOutput
+ExecStartPost=/usr/bin/bluetoothctl default-agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+BTAGENT
+systemctl daemon-reload
+systemctl enable bt-agent.service
+systemctl start bt-agent.service 2>/dev/null || true
+# Ensure pi user is in bluetooth group
+usermod -aG bluetooth pi 2>/dev/null || true
+echo "        Bluetooth agent configured (NoInputNoOutput, auto-accept)."
+
+# --- 15. Disable kiosk escape via keyboard (L8) ---
+echo "[15/15] Disabling kiosk escape shortcuts..."
 # Mask virtual console getty services (keep tty1 for X session)
 for i in 2 3 4 5 6; do
     systemctl mask getty@tty${i}.service 2>/dev/null || true
@@ -301,6 +338,7 @@ echo "  Auto-updates:   security patches only"
 echo "  Sudo:           restricted to ken.service"
 echo "  SSH:            key-only, no root, pi only (validated)"
 echo "  Filesystem:     noexec tmp/shm, no core dumps, umask 027"
+echo "  Bluetooth:      agent (NoInputNoOutput), PulseAudio BT module"
 echo "  Kiosk escape:   VTs masked, shortcuts stripped, no zap"
 echo ""
 echo "  To start the service now without reboot:"

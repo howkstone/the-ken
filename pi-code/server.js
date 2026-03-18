@@ -1539,10 +1539,27 @@ const server = http.createServer(async (req, res) => {
       if (!mac || !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(mac)) {
         res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid MAC address' })); return;
       }
-      const { execFile } = require('child_process');
+      const { execFile, exec } = require('child_process');
       execFile('bluetoothctl', ['connect', mac], { timeout: 10000 }, (err, stdout, stderr) => {
         const output = (stdout || '') + (stderr || '');
         const success = !err || output.includes('successful');
+        if (success) {
+          // Route audio to Bluetooth sink after short delay for PulseAudio to detect it
+          setTimeout(() => {
+            const macUnderscored = mac.replace(/:/g, '_');
+            exec('pactl list sinks short', { timeout: 3000 }, (pErr, pOut) => {
+              const sinkLine = (pOut || '').split('\n').find(l => l.includes(macUnderscored) || l.includes('bluez'));
+              if (sinkLine) {
+                const sinkName = sinkLine.split('\t')[1];
+                if (sinkName) {
+                  exec('pactl set-default-sink ' + sinkName, { timeout: 3000 }, () => {
+                    console.log('Audio routed to Bluetooth sink:', sinkName);
+                  });
+                }
+              }
+            });
+          }, 2000);
+        }
         syncBluetoothToCloud();
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success, error: success ? null : output.trim() }));
       });
@@ -1557,8 +1574,16 @@ const server = http.createServer(async (req, res) => {
       if (!mac || !/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(mac)) {
         res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Invalid MAC address' })); return;
       }
-      const { execFile } = require('child_process');
+      const { execFile, exec } = require('child_process');
       execFile('bluetoothctl', ['disconnect', mac], { timeout: 5000 }, (err) => {
+        // Route audio back to built-in speaker
+        exec('pactl list sinks short', { timeout: 3000 }, (pErr, pOut) => {
+          const builtIn = (pOut || '').split('\n').find(l => l.includes('alsa') && !l.includes('bluez'));
+          if (builtIn) {
+            const sinkName = builtIn.split('\t')[1];
+            if (sinkName) exec('pactl set-default-sink ' + sinkName, { timeout: 3000 }, () => {});
+          }
+        });
         syncBluetoothToCloud();
         res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: true }));
       });
