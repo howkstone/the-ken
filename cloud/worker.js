@@ -548,6 +548,41 @@ export default {
       } catch { return json({ error: 'Invalid request' }, 400); }
     }
 
+    // Reset password using MFA code (no email link needed)
+    if (request.method === 'POST' && path === '/api/auth/reset-with-mfa') {
+      const rl = await checkRateLimit(env, request, 'mfa-reset', 5, 300);
+      if (rl.limited) return json({ error: 'Too many attempts. Try again later.' }, 429);
+      try {
+        const body = await request.json();
+        const { email, totpCode, newPassword } = body;
+        if (!email || !totpCode || !newPassword) return json({ error: 'Email, authenticator code, and new password are required' }, 400);
+        if (newPassword.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400);
+        const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
+        if (!user) return json({ error: 'Account not found' }, 404);
+        if (!user.mfaEnabled || !user.mfaSecret) return json({ error: 'MFA is not enabled on this account. Use the email reset link instead.' }, 400);
+        const validTotp = await verifyTOTP(user.mfaSecret, totpCode);
+        if (!validTotp) return json({ error: 'Invalid authenticator code' }, 401);
+        const { hash: newHash, salt: newSalt } = await hashPassword(newPassword);
+        user.passwordHash = newHash;
+        user.passwordSalt = newSalt;
+        delete user.resetToken;
+        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+        // Invalidate all existing sessions
+        try {
+          const sessionList = await env.KEN_KV.list({ prefix: 'session:' });
+          for (const key of sessionList.keys) {
+            const sess = await env.KEN_KV.get(key.name, 'json');
+            if (sess && sess.email && sess.email.toLowerCase() === email.toLowerCase()) {
+              await env.KEN_KV.delete(key.name);
+            }
+          }
+        } catch {}
+        const deviceIds = Object.keys(user.devices || {});
+        if (deviceIds[0]) await logAudit(env, deviceIds[0], email.toLowerCase(), 'Password reset via MFA', {});
+        return json({ success: true });
+      } catch { return json({ error: 'Invalid request' }, 400); }
+    }
+
     // ===== FEEDBACK (all devices — for head office) =====
     if (request.method === 'GET' && path === '/api/admin/feedback/all') {
       const auth = await requireAuth(request, env);
