@@ -804,6 +804,37 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Typing indicator: forward typing signal to cloud
+  if (req.method === 'POST' && req.url === '/api/messages/typing') {
+    readBody(req).then(async body => {
+      try {
+        await cloudFetch(`${CLOUD_API}/api/messages/${DEVICE_ID}/typing`, {
+          method: 'POST', body
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      } catch {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false }));
+      }
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
+    return;
+  }
+
+  // Typing indicator: fetch typing status from cloud
+  if (req.method === 'GET' && req.url === '/api/messages/typing') {
+    try {
+      const resp = await cloudFetch(`${CLOUD_API}/api/messages/${DEVICE_ID}/typing`);
+      const data = await resp.json();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(data));
+    } catch {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ typing: false }));
+    }
+    return;
+  }
+
   // Return messages (for Electron frontend)
   if (req.method === 'GET' && req.url === '/api/messages') {
     const store = readMessages();

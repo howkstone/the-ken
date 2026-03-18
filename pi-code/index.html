@@ -1472,6 +1472,23 @@
       margin-top: 4px;
     }
 
+    .typing-indicator {
+      font-family: 'Jost', sans-serif;
+      font-weight: 500;
+      font-style: italic;
+      font-size: 20px;
+      color: var(--mid);
+      height: 28px;
+      line-height: 28px;
+      padding: 0 20px;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      pointer-events: none;
+    }
+    .typing-indicator.visible {
+      opacity: 1;
+    }
+
     /* ===== MEDICAL INFO ===== */
     .medical-content {
       padding: 8px 0;
@@ -2868,6 +2885,7 @@
       <div class="settings-heading" id="threadHeading">Sarah</div>
     </div>
     <div class="messages-list" id="threadMessages"></div>
+    <div class="typing-indicator" id="typingIndicator"></div>
     <div class="msg-view-actions" style="gap:12px;">
       <button class="read-aloud-btn" onclick="replyFromThread()" style="background:rgba(196,169,98,0.15);color:var(--gold);border:3px solid var(--gold);">Reply</button>
     </div>
@@ -3909,6 +3927,7 @@
 
     // ===== SCREENS =====
     function showScreen(id) {
+      if (id !== 'thread') stopTypingPoll();
       document.getElementById('homeScreen').style.display = id === 'home' ? 'flex' : 'none';
       document.getElementById('callingScreen').classList.toggle('active', id === 'calling');
       document.getElementById('callScreen').classList.toggle('active', id === 'call');
@@ -5061,6 +5080,7 @@
       });
 
       showScreen('thread');
+      startTypingPoll();
     }
 
     function replyFromThread() {
@@ -5350,6 +5370,7 @@
     function typeReply(char) {
       if (replyBuffer.length >= 200) return;
       if (replyBuffer.length === 0 && char === ' ') return;
+      sendTypingSignal();
       // Auto-capitalise after start or full stop
       if (replyBuffer.length === 0 || replyBuffer.match(/[.!?]\s*$/)) {
         char = char.toUpperCase();
@@ -5461,6 +5482,64 @@
         document.getElementById('replyScreen').classList.remove('active');
         replyBuffer = '';
       }
+    }
+
+    // ===== TYPING INDICATOR =====
+    let typingLastSent = 0;
+    let typingPollInterval = null;
+    let typingHideTimeout = null;
+
+    function sendTypingSignal() {
+      const now = Date.now();
+      if (now - typingLastSent < 3000) return; // debounce: once per 3s
+      typingLastSent = now;
+      const userName = localStorage.getItem('ken-user-name') || 'Ken';
+      fetch('http://localhost:3000/api/messages/typing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: userName })
+      }).catch(function() {});
+    }
+
+    function startTypingPoll() {
+      if (typingPollInterval) return;
+      pollTypingStatus();
+      typingPollInterval = setInterval(pollTypingStatus, 3000);
+    }
+
+    function stopTypingPoll() {
+      if (typingPollInterval) {
+        clearInterval(typingPollInterval);
+        typingPollInterval = null;
+      }
+      if (typingHideTimeout) {
+        clearTimeout(typingHideTimeout);
+        typingHideTimeout = null;
+      }
+      var el = document.getElementById('typingIndicator');
+      if (el) { el.classList.remove('visible'); el.textContent = ''; }
+    }
+
+    function pollTypingStatus() {
+      fetch('http://localhost:3000/api/messages/typing')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var el = document.getElementById('typingIndicator');
+          if (!el) return;
+          var userName = localStorage.getItem('ken-user-name') || 'Ken';
+          if (data.typing && data.name && data.name !== userName) {
+            el.textContent = data.name + ' is typing\u2026';
+            el.classList.add('visible');
+            // Auto-hide after 10 seconds client-side
+            if (typingHideTimeout) clearTimeout(typingHideTimeout);
+            typingHideTimeout = setTimeout(function() {
+              el.classList.remove('visible');
+            }, 10000);
+          } else {
+            el.classList.remove('visible');
+          }
+        })
+        .catch(function() {});
     }
 
     // ===== SEND CONFIRMATION OVERLAY =====
