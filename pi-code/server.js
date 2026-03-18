@@ -157,18 +157,49 @@ async function syncCallHistory() {
 
 if (!fs.existsSync(PHOTOS_DIR)) fs.mkdirSync(PHOTOS_DIR);
 
+function generateShortDeviceId() {
+  const letter = String.fromCharCode(65 + Math.floor(Math.random() * 26));
+  const num = String(Math.floor(Math.random() * 100000)).padStart(5, '0');
+  return letter + num;
+}
+
 function getDeviceId() {
   try {
     return fs.readFileSync(DEVICE_ID_FILE, 'utf8').trim();
   } catch {
-    const id = crypto.randomUUID();
+    const id = generateShortDeviceId();
     fs.writeFileSync(DEVICE_ID_FILE, id);
     console.log('Generated device ID:', id);
     return id;
   }
 }
 
-const DEVICE_ID = getDeviceId();
+let DEVICE_ID = getDeviceId();
+
+// Migrate UUID device IDs to short format (A12345)
+async function migrateDeviceId() {
+  if (/^[A-Z]\d{5}$/.test(DEVICE_ID)) return; // Already short format
+  if (!/^[0-9a-f]{8}-/.test(DEVICE_ID)) return; // Not a UUID either
+  const newId = generateShortDeviceId();
+  console.log(`Migrating device ID: ${DEVICE_ID} → ${newId}`);
+  try {
+    const resp = await cloudFetch(`${CLOUD_API}/api/device/migrate-id`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldId: DEVICE_ID, newId })
+    });
+    const data = await resp.json();
+    if (data.success) {
+      fs.writeFileSync(DEVICE_ID_FILE, newId);
+      DEVICE_ID = newId;
+      console.log(`Device ID migrated successfully: ${newId}`);
+    } else {
+      console.error('Migration failed:', data.error);
+    }
+  } catch (e) {
+    console.error('Migration error:', e.message);
+  }
+}
 
 function readContacts() {
   try { return JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf8')); }
@@ -282,11 +313,24 @@ async function pollForMessages() {
 async function syncContactsToCloud() {
   try {
     const contacts = readContacts();
-    // Send name, relationship, and position only (not photos or API keys)
-    const safeContacts = (contacts.contacts || []).map(c => ({
-      name: c.name, relationship: c.relationship || '', position: c.position,
-      phoneNumber: c.phoneNumber || ''
-    }));
+    const safeContacts = (contacts.contacts || []).map(c => {
+      const entry = {
+        id: c.id, name: c.name, relationship: c.relationship || '', position: c.position,
+        phoneNumber: c.phoneNumber || '', birthday: c.birthday || '',
+        isEmergency: c.emergencyContact || false,
+      };
+      // Include photo as base64 so portal can display it
+      if (c.photo && typeof c.photo === 'string') {
+        try {
+          const photoPath = c.photo.startsWith('./') ? path.join(__dirname, c.photo) : c.photo;
+          if (fs.existsSync(photoPath)) {
+            const photoData = fs.readFileSync(photoPath);
+            entry.photo = 'data:image/jpeg;base64,' + photoData.toString('base64');
+          }
+        } catch {}
+      }
+      return entry;
+    });
     await cloudFetch(`${CLOUD_API}/api/contacts/${DEVICE_ID}/sync`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1302,13 +1346,15 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, '0.0.0.0', async () => {
   console.log('Contact server running on port ' + PORT);
   console.log('Device ID:', DEVICE_ID);
   console.log('Cloud API:', CLOUD_API);
   console.log('Polling every ' + (POLL_INTERVAL / 1000) + 's for contacts and messages');
+  // Migrate UUID → short device ID if needed (after a short delay for device key)
+  setTimeout(() => migrateDeviceId(), 8000);
   // Log device startup to audit trail (delayed to allow heartbeat to set device key)
-  setTimeout(() => logToAudit('Device started', { deviceId: DEVICE_ID }), 10000);
+  setTimeout(() => logToAudit('Device started', { deviceId: DEVICE_ID }), 12000);
 });
 
 module.exports = server;

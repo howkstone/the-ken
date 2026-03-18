@@ -264,7 +264,7 @@ export default {
 
     // ===== DEVICE AUTHENTICATION MIDDLEWARE =====
     // All device-scoped endpoints require either a valid device API key or user session
-    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts|export|groups)\/([a-f0-9-]+)/);
+    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts|export|groups)\/([A-Za-z0-9-]+)/);
     if (deviceScopeMatch) {
       const scopedDeviceId = deviceScopeMatch[1];
       // Public endpoints exempt from auth (QR code contact form, feedback, heartbeat)
@@ -1864,6 +1864,58 @@ export default {
       const deviceId = path.split('/')[3];
       const info = await env.KEN_KV.get(`device:${deviceId}`, 'json');
       return json(info || { userName: 'The Ken' });
+    }
+
+    // ===== DEVICE ID MIGRATION (UUID → short format) =====
+    if (request.method === 'POST' && path === '/api/device/migrate-id') {
+      try {
+        const body = await request.json();
+        const { oldId, newId } = body;
+        if (!oldId || !newId) return json({ error: 'oldId and newId required' }, 400);
+        if (!/^[A-Z]\d{5}$/.test(newId)) return json({ error: 'newId must be format A12345' }, 400);
+        // Require device key auth
+        const deviceKey = await env.KEN_KV.get(`device-key:${oldId}`);
+        if (!deviceKey) return json({ error: 'Unknown device' }, 404);
+        const providedKey = request.headers.get('X-Ken-Device-Key');
+        if (!providedKey || providedKey !== deviceKey) return json({ error: 'Device authentication required' }, 401);
+        // Check new ID isn't taken
+        const existingNew = await env.KEN_KV.get(`device:${newId}`, 'json');
+        if (existingNew) return json({ error: 'New device ID already in use' }, 409);
+        // Migrate all KV keys
+        const prefixes = [
+          'device:', 'device-key:', 'heartbeat:', 'heartbeat-time:',
+          'messages:', 'history:', 'contacts:', 'settings:',
+          'med-alerts:', 'medical:', 'reminders:', 'voicemails:',
+          'photos:', 'offline-alerts:', 'screen:', 'hq-access-requests:',
+          'feedback:', 'notifications:', 'call-history:', 'export:',
+          'groups:', 'birthday-config:', 'group-call:',
+        ];
+        for (const prefix of prefixes) {
+          const val = await env.KEN_KV.get(`${prefix}${oldId}`);
+          if (val !== null) {
+            await env.KEN_KV.put(`${prefix}${newId}`, val);
+            await env.KEN_KV.delete(`${prefix}${oldId}`);
+          }
+        }
+        // Update devices:all list
+        const devices = await env.KEN_KV.get('devices:all', 'json') || [];
+        const idx = devices.indexOf(oldId);
+        if (idx !== -1) { devices[idx] = newId; } else { devices.push(newId); }
+        await env.KEN_KV.put('devices:all', JSON.stringify(devices));
+        // Update all users who had this device
+        const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
+        for (const key of allUsers.keys) {
+          try {
+            const u = await env.KEN_KV.get(key.name, 'json');
+            if (!u || !u.devices || !u.devices[oldId]) continue;
+            u.devices[newId] = u.devices[oldId];
+            delete u.devices[oldId];
+            await env.KEN_KV.put(key.name, JSON.stringify(u));
+          } catch {}
+        }
+        await logAudit(env, newId, 'system', 'Device ID migrated', { oldId, newId });
+        return json({ success: true, oldId, newId });
+      } catch (e) { return json({ error: 'Migration failed: ' + e.message }, 500); }
     }
 
     // ===== HEARTBEAT =====
