@@ -45,6 +45,22 @@ function deviceHeaders(extra) {
   return Object.assign(headers, extra || {});
 }
 
+// Request body size limit helper
+const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
+function readBody(req, maxSize) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > (maxSize || MAX_BODY_SIZE)) { req.destroy(); reject(new Error('Body too large')); return; }
+      body += chunk;
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
 // Log events to cloud audit trail (fire-and-forget)
 function logToAudit(action, details) {
   if (!DEVICE_API_KEY) return; // Can't log without auth
@@ -693,9 +709,7 @@ const server = http.createServer(async (req, res) => {
 
   // Dismiss a voicemail notification ("Later" pressed)
   if (req.method === 'POST' && req.url === '/api/voicemails/dismiss') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
+    readBody(req).then(body => {
       try {
         const { id } = JSON.parse(body);
         pendingVoicemailNotifications = pendingVoicemailNotifications.filter(n => n.id !== id);
@@ -705,15 +719,13 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid request' }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
   // Mark voicemail as watched (user played it)
   if (req.method === 'POST' && req.url === '/api/voicemails/watched') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    readBody(req).then(async body => {
       try {
         const { id } = JSON.parse(body);
         // Remove from pending notifications
@@ -736,7 +748,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid request' }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
@@ -757,9 +769,7 @@ const server = http.createServer(async (req, res) => {
 
   // Log a call (from Electron frontend)
   if (req.method === 'POST' && req.url === '/api/calls/log') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
+    readBody(req).then(body => {
       try {
         const { type, contactName, roomUrl, status } = JSON.parse(body);
         logCall(type, contactName, roomUrl || '', status || 'connected');
@@ -769,15 +779,13 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
   // Screen brightness control (for nightlight mode)
   if (req.method === 'POST' && req.url === '/api/brightness') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
+    readBody(req).then(body => {
       try {
         const { brightness } = JSON.parse(body);
         // Set backlight brightness on Pi (0-255)
@@ -792,7 +800,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
@@ -847,9 +855,7 @@ const server = http.createServer(async (req, res) => {
 
   // Signal outbound call (Ken is calling someone — notify family portal)
   if (req.method === 'POST' && req.url === '/api/calls/outbound') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    readBody(req).then(async body => {
       try {
         const { contactName, roomUrl } = JSON.parse(body);
         logToAudit('Initiated call', { contact: contactName });
@@ -864,7 +870,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
@@ -879,9 +885,7 @@ const server = http.createServer(async (req, res) => {
 
   // Update device info in cloud (called by Electron frontend)
   if (req.method === 'POST' && req.url === '/api/device/info') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    readBody(req).then(async body => {
       try {
         const info = JSON.parse(body);
         await cloudFetch(`${CLOUD_API}/api/device/${DEVICE_ID}`, {
@@ -895,7 +899,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
@@ -955,9 +959,7 @@ const server = http.createServer(async (req, res) => {
   // Proxy: medication reminder response (frontend → cloud via server, no key exposed)
   if (req.method === 'POST' && req.url.match(/^\/api\/reminders\/[\w-]+\/response$/)) {
     const reminderId = req.url.split('/')[3];
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    readBody(req).then(async body => {
       try {
         await cloudFetch(`${CLOUD_API}/api/reminders/${DEVICE_ID}/${reminderId}/response`, {
           method: 'POST', body
@@ -968,16 +970,14 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
   // Proxy: emoji reaction (frontend → cloud via server, no key exposed)
   if (req.method === 'POST' && req.url.match(/^\/api\/messages\/[\w-]+\/react$/)) {
     const msgId = req.url.split('/')[3];
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    readBody(req).then(async body => {
       try {
         await cloudFetch(`${CLOUD_API}/api/messages/${DEVICE_ID}/${msgId}/react`, {
           method: 'POST', body
@@ -988,7 +988,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
@@ -1048,9 +1048,7 @@ const server = http.createServer(async (req, res) => {
 
   // Add new contact (local)
   if (req.method === 'POST' && req.url === '/api/contacts') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    readBody(req).then(async body => {
       try {
         const { name, relationship, phoneNumber, photo } = JSON.parse(body);
         if (!name) { res.writeHead(400); res.end(JSON.stringify({ error: 'Name required' })); return; }
@@ -1084,7 +1082,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(500);
         res.end(JSON.stringify({ error: 'Failed to add contact' }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
@@ -1117,7 +1115,12 @@ const server = http.createServer(async (req, res) => {
   // Serve a carousel photo file
   if (req.method === 'GET' && req.url.startsWith('/api/photos/file/')) {
     const fileName = req.url.split('/').pop();
-    const filePath = path.join(PHOTOS_CAROUSEL_DIR, fileName);
+    const filePath = path.resolve(PHOTOS_CAROUSEL_DIR, fileName);
+    if (!filePath.startsWith(path.resolve(PHOTOS_CAROUSEL_DIR))) {
+      res.writeHead(403);
+      res.end('Forbidden');
+      return;
+    }
     if (fs.existsSync(filePath)) {
       const ext = path.extname(fileName).toLowerCase();
       const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
@@ -1140,9 +1143,7 @@ const server = http.createServer(async (req, res) => {
 
   // Signal voicemail to cloud
   if (req.method === 'POST' && req.url === '/api/calls/voicemail') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    readBody(req).then(async body => {
       try {
         const { from } = JSON.parse(body);
         await cloudFetch(`${CLOUD_API}/api/calls/${DEVICE_ID}/voicemail`, {
@@ -1156,7 +1157,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
@@ -1217,9 +1218,7 @@ const server = http.createServer(async (req, res) => {
 
   // WiFi connect (uses execFile with args array to prevent shell injection)
   if (req.method === 'POST' && req.url === '/api/wifi/connect') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
+    readBody(req).then(body => {
       const { execFileSync } = require('child_process');
       try {
         const { ssid, password } = JSON.parse(body);
@@ -1232,14 +1231,12 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, error: err.message || 'Connection failed' }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
   if (req.method === 'POST' && req.url === '/api/capture-frame') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    readBody(req).then(async body => {
       try {
         const { screen } = JSON.parse(body);
         await captureBlurredScreenshot(screen || 'unknown');
@@ -1249,15 +1246,13 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Capture failed' }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
   // Submit feedback (captures screenshot and forwards to cloud)
   if (req.method === 'POST' && req.url === '/api/feedback') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', async () => {
+    readBody(req).then(async body => {
       try {
         const feedbackBody = JSON.parse(body);
         // Attach rolling screenshot buffer (last 5 screens, messages blurred)
@@ -1301,7 +1296,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to submit feedback' }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
@@ -1326,9 +1321,7 @@ const server = http.createServer(async (req, res) => {
 
   // Audit log relay — frontend posts events here, server forwards to cloud
   if (req.method === 'POST' && req.url === '/api/audit/log') {
-    let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
+    readBody(req).then(body => {
       try {
         const { action, details } = JSON.parse(body);
         if (action) logToAudit(action, details || {});
@@ -1338,7 +1331,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid request' }));
       }
-    });
+    }).catch(() => { res.writeHead(413); res.end('Body too large'); });
     return;
   }
 
@@ -1372,11 +1365,12 @@ const server = http.createServer(async (req, res) => {
 
   // Camera status — check if camera is available
   if (req.method === 'GET' && req.url === '/api/camera/status') {
-    const { exec } = require('child_process');
-    exec('libcamera-still --list-cameras 2>&1', { timeout: 5000 }, (err, stdout) => {
-      const available = !err && stdout && !stdout.includes('No cameras');
+    const { execFile } = require('child_process');
+    execFile('libcamera-still', ['--list-cameras'], { timeout: 5000 }, (err, stdout, stderr) => {
+      const output = (stdout || '') + (stderr || '');
+      const available = !err && output && !output.includes('No cameras');
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ available, detail: (stdout || '').trim() }));
+      res.end(JSON.stringify({ available, detail: output.trim() }));
     });
     return;
   }
@@ -1385,7 +1379,7 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
-server.listen(PORT, '0.0.0.0', async () => {
+server.listen(PORT, '127.0.0.1', async () => {
   console.log('Contact server running on port ' + PORT);
   console.log('Device ID:', DEVICE_ID);
   console.log('Cloud API:', CLOUD_API);
