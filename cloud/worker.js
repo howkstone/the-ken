@@ -1017,7 +1017,7 @@ export default {
       if (!env.DAILY_API_KEY) return json({ error: 'Daily API key not configured' }, 500);
       try {
         const body = await request.json();
-        const roomName = sanitize(body.roomName || ('ken-' + deviceId.slice(0, 8)));
+        const roomName = sanitize(body.roomName || ('ken-' + deviceId));
         // Create or get existing room
         const dailyResp = await fetch('https://api.daily.co/v1/rooms', {
           method: 'POST',
@@ -3125,7 +3125,7 @@ export default {
       await logAudit(env, deviceId, auth.user.email, 'Exported device data', {});
       return new Response(JSON.stringify(exportData, null, 2), {
         status: 200,
-        headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="ken-export-' + deviceId.slice(0,8) + '.json"', ...getCorsHeaders(request) },
+        headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="ken-export-' + deviceId + '.json"', ...getCorsHeaders(request) },
       });
     }
 
