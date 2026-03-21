@@ -49,7 +49,7 @@ function escapeHtml(str) {
 
 // ===== SECURITY: REQUEST SIZE LIMIT =====
 const MAX_REQUEST_BODY = 5 * 1024 * 1024; // 5MB global max
-const MAX_PHOTO_BASE64 = 500 * 1024; // 500KB decoded for photos
+const MAX_PHOTO_BASE64 = 500 * 1024; // 500KB decoded for contact/user photos
 const MAX_VOICEMAIL_BASE64 = 5 * 1024 * 1024; // 5MB for voicemails
 const MAX_SCREENSHOT_BASE64 = 200 * 1024; // 200KB for screenshots
 
@@ -285,7 +285,7 @@ export default {
 
     // ===== DEVICE AUTHENTICATION MIDDLEWARE =====
     // All device-scoped endpoints require either a valid device API key or user session
-    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|photos|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts|export|groups|escalation)\/([A-Za-z0-9-]+)/);
+    const deviceScopeMatch = path.match(/^\/api\/(?:contacts|messages|calls|medical|voicemail|settings|heartbeat|history|screen|reminders|device|check-offline|offline-alert|audit|feedback|notifications|med-alerts|export|groups|escalation)\/([A-Za-z0-9-]+)/);
     if (deviceScopeMatch) {
       const scopedDeviceId = deviceScopeMatch[1];
       // Public endpoints exempt from auth (QR code contact form, feedback, heartbeat)
@@ -2031,7 +2031,7 @@ export default {
           'device:', 'device-key:', 'heartbeat:', 'heartbeat-time:',
           'messages:', 'history:', 'contacts:', 'settings:',
           'med-alerts:', 'medical:', 'reminders:', 'voicemails:',
-          'photos:', 'offline-alerts:', 'screen:', 'hq-access-requests:',
+          'offline-alerts:', 'screen:', 'hq-access-requests:',
           'feedback:', 'notifications:', 'call-history:', 'export:',
           'groups:', 'birthday-config:', 'group-call:',
         ];
@@ -2288,89 +2288,8 @@ export default {
 
     // (Duplicate reminder endpoints removed — handled by REMOTE MEDICATION REMINDERS section above)
 
-    // ===== PHOTOS =====
-    if (request.method === 'POST' && path.match(/^\/api\/photos\/[\w-]+$/)) {
-      const deviceId = path.split('/')[3];
-      const auth = await requireAuth(request, env);
-      if (auth.error) return auth.response;
-      const userRole = getUserRole(auth.user, deviceId);
-      if (!hasPermission(userRole, 'edit:settings')) return json({ error: 'Insufficient permissions' }, 403);
-      try {
-        const body = await request.json();
-        const { photo, caption } = body;
-        if (!photo) return json({ error: 'photo required' }, 400);
-        // Validate photo size (base64 is ~33% larger than decoded)
-        if (photo.length > MAX_PHOTO_BASE64 * 1.4) return json({ error: 'Photo too large (max 500KB)' }, 400);
-        const photos = await env.KEN_KV.get(`photos:${deviceId}`, 'json') || [];
-        if (photos.length >= 20) return json({ error: 'Maximum 20 photos' }, 400);
-        const photoId = crypto.randomUUID();
-        // If R2 binding exists, store image bytes in R2 and only metadata in KV
-        if (env.KEN_MEDIA) {
-          // Strip data URL prefix to get raw base64
-          const base64Data = photo.replace(/^data:image\/[^;]+;base64,/, '');
-          const binaryStr = atob(base64Data);
-          const bytes = new Uint8Array(binaryStr.length);
-          for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-          const r2Key = `photos/${deviceId}/${photoId}.jpg`;
-          await env.KEN_MEDIA.put(r2Key, bytes.buffer, {
-            httpMetadata: { contentType: 'image/jpeg' }
-          });
-          photos.push({
-            id: photoId,
-            r2Key,
-            caption: (caption || '').trim(),
-            uploadedAt: new Date().toISOString()
-          });
-        } else {
-          photos.push({
-            id: photoId,
-            photo, // base64 data URL
-            caption: (caption || '').trim(),
-            uploadedAt: new Date().toISOString()
-          });
-        }
-        await env.KEN_KV.put(`photos:${deviceId}`, JSON.stringify(photos));
-        const session = await getSession(request, env);
-        await logAudit(env, deviceId, session ? session.email : 'device', 'Uploaded photo', { caption: (caption || '').trim() });
-        return json({ success: true });
-      } catch {
-        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
-      }
-    }
-
-    if (request.method === 'GET' && path.match(/^\/api\/photos\/[\w-]+$/)) {
-      const deviceId = path.split('/')[3];
-      const photos = await env.KEN_KV.get(`photos:${deviceId}`, 'json') || [];
-      // For R2-backed photos, return a media URL instead of base64
-      const mapped = photos.map(p => {
-        if (p.r2Key) {
-          return { id: p.id, caption: p.caption, uploadedAt: p.uploadedAt, mediaUrl: `/api/media/${p.r2Key}` };
-        }
-        return p; // Legacy base64 photos returned as-is
-      });
-      return json({ photos: mapped });
-    }
-
-    if (request.method === 'DELETE' && path.match(/^\/api\/photos\/[\w-]+\/[\w-]+$/)) {
-      const parts = path.split('/');
-      const deviceId = parts[3];
-      const photoId = parts[4];
-      const auth = await requireAuth(request, env);
-      if (auth.error) return auth.response;
-      const userRole = getUserRole(auth.user, deviceId);
-      if (!hasPermission(userRole, 'edit:settings')) return json({ error: 'Insufficient permissions' }, 403);
-      const photos = await env.KEN_KV.get(`photos:${deviceId}`, 'json') || [];
-      // Find photo to check for R2 key before filtering
-      const toDelete = photos.find(p => p.id === photoId);
-      if (toDelete && toDelete.r2Key && env.KEN_MEDIA) {
-        await env.KEN_MEDIA.delete(toDelete.r2Key);
-      }
-      const filtered = photos.filter(p => p.id !== photoId);
-      await env.KEN_KV.put(`photos:${deviceId}`, JSON.stringify(filtered));
-      const session = await getSession(request, env);
-      await logAudit(env, deviceId, session ? session.email : 'device', 'Deleted photo', { photoId });
-      return json({ success: true });
-    }
+    // Photos carousel feature removed — Ken is a connectivity device, not a picture frame.
+    // Contact/user profile photos remain via the contacts and user profile endpoints.
 
     // ===== FEEDBACK =====
     if (request.method === 'POST' && path.match(/^\/api\/feedback\/[\w-]+$/)) {
@@ -3706,7 +3625,7 @@ export default {
           `device:${deviceId}`, `device-key:${deviceId}`, `heartbeat:${deviceId}`, `heartbeat-time:${deviceId}`,
           `messages:${deviceId}`, `history:${deviceId}`, `contactlist:${deviceId}`, `pending:${deviceId}`,
           `medical:${deviceId}`, `patient:${deviceId}`, `settings:${deviceId}`, `queue:${deviceId}`,
-          `reminders:${deviceId}`, `photos:${deviceId}`, `voicemails:${deviceId}`, `callhistory:${deviceId}`,
+          `reminders:${deviceId}`, `voicemails:${deviceId}`, `callhistory:${deviceId}`,
           `feedback:${deviceId}`, `audit:${deviceId}`, `room:${deviceId}`, `groups:${deviceId}`,
           `offline-alerts:${deviceId}`, `read-receipts:${deviceId}`, `birthday-prefs:${deviceId}`,
           `scheduled-msgs:${deviceId}`, `med-alerts:${deviceId}`,
@@ -5635,14 +5554,6 @@ function familyHTML(deviceId) {
       </div>
     </div>
 
-    <!-- Photos -->
-    <div style="margin-bottom:24px;">
-      <div style="font-weight:500;font-size:16px;color:#C4A962;margin-bottom:12px;">Photo Carousel</div>
-      <div style="font-size:13px;color:#6B6459;margin-bottom:12px;">Upload photos for The Ken to display as a slideshow when idle.</div>
-      <div id="photosList" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;"></div>
-      <input type="file" id="photoUpload" accept="image/*" onchange="uploadPhoto(event)" style="display:none;" />
-      <button onclick="document.getElementById('photoUpload').click()" style="width:100%;font-family:'Jost',sans-serif;font-weight:500;font-size:15px;color:#FDFAF5;background:#C4A962;border:none;border-radius:10px;padding:12px;cursor:pointer;">Upload Photo</button>
-    </div>
   </div>
 
   <script>
@@ -5700,7 +5611,6 @@ function familyHTML(deviceId) {
         loadDeviceSettings();
         loadOfflineAlerts();
         loadReminders();
-        loadPhotos();
       }
     }
 
@@ -6263,64 +6173,6 @@ function familyHTML(deviceId) {
       try {
         await fetch('/api/reminders/' + DEVICE_ID + '/' + id, { method: 'DELETE', headers: { 'X-Ken-CSRF': '1' } });
         loadReminders();
-      } catch {}
-    }
-
-    // ===== PHOTOS =====
-    async function loadPhotos() {
-      try {
-        const resp = await fetch('/api/photos/' + DEVICE_ID);
-        const data = await resp.json();
-        const list = document.getElementById('photosList');
-        if (!data.photos || data.photos.length === 0) {
-          list.innerHTML = '<span style="font-size:14px;color:#6B6459;">No photos uploaded yet.</span>';
-          return;
-        }
-        list.innerHTML = data.photos.map(p =>
-          '<div style="position:relative;width:72px;height:72px;border-radius:8px;overflow:hidden;border:2px solid rgba(196,169,98,0.3);">' +
-          '<img src="' + p.photo + '" style="width:100%;height:100%;object-fit:cover;" />' +
-          '<button onclick="deletePhoto(\\'' + p.id + '\\')" style="position:absolute;top:2px;right:2px;width:20px;height:20px;background:rgba(0,0,0,0.5);color:#fff;border:none;border-radius:50%;font-size:12px;cursor:pointer;line-height:1;">x</button>' +
-          '</div>'
-        ).join('');
-      } catch {}
-    }
-
-    function uploadPhoto(event) {
-      const file = event.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = async (ev) => {
-        // Resize to max 800px
-        const img = new Image();
-        img.onload = async () => {
-          const canvas = document.createElement('canvas');
-          const maxDim = 800;
-          let w = img.width, h = img.height;
-          if (w > maxDim || h > maxDim) {
-            if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
-            else { w = Math.round(w * maxDim / h); h = maxDim; }
-          }
-          canvas.width = w; canvas.height = h;
-          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-          try {
-            await fetch('/api/photos/' + DEVICE_ID, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Ken-CSRF': '1' },
-              body: JSON.stringify({ photo: dataUrl })
-            });
-            loadPhotos();
-          } catch { alert('Could not upload photo.'); }
-        };
-        img.src = ev.target.result;
-      };
-      reader.readAsDataURL(file);
-    }
-
-    async function deletePhoto(id) {
-      try {
-        await fetch('/api/photos/' + DEVICE_ID + '/' + id, { method: 'DELETE', headers: { 'X-Ken-CSRF': '1' } });
-        loadPhotos();
       } catch {}
     }
 
