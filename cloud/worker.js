@@ -374,6 +374,50 @@ async function d1SaveSettings(env, deviceId, settings) {
   } catch (e) { console.error('D1 saveSettings error:', e.message); }
 }
 
+// ===== D1 MISSING HELPERS (completing TODO items) =====
+async function d1SaveMedAlerts(env, deviceId, alerts) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare('DELETE FROM med_alerts WHERE device_id = ?').bind(deviceId).run();
+    for (const a of alerts) {
+      await env.KEN_DB.prepare('INSERT INTO med_alerts (id, device_id, reminder_id, label, action, timestamp, resolved, resolved_by, resolved_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .bind(a.id, deviceId, a.reminderId||null, a.label||'', a.action||'', a.timestamp||new Date().toISOString(), a.resolved?1:0, a.resolvedBy||null, a.resolvedAt||null).run();
+    }
+  } catch (e) { console.error('D1 saveMedAlerts error:', e.message); }
+}
+
+async function d1SaveOfflineAlerts(env, deviceId, config) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare('INSERT INTO offline_alert_config (device_id, enabled, delay_minutes, contact_names, last_alert_sent) VALUES (?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET enabled=excluded.enabled, delay_minutes=excluded.delay_minutes, contact_names=excluded.contact_names, last_alert_sent=excluded.last_alert_sent')
+      .bind(deviceId, config.enabled?1:0, config.delayMinutes||10, JSON.stringify(config.contactNames||[]), config.lastAlertSent||null).run();
+  } catch (e) { console.error('D1 saveOfflineAlerts error:', e.message); }
+}
+
+async function d1SaveNotifPrefs(env, email, prefs) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare('INSERT INTO notification_prefs (email, timing, messages, voicemails, missed_calls, medication_alerts) VALUES (?,?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET timing=excluded.timing, messages=excluded.messages, voicemails=excluded.voicemails, missed_calls=excluded.missed_calls, medication_alerts=excluded.medication_alerts')
+      .bind(email, prefs.timing||'2min', prefs.messages!==false?1:0, prefs.voicemails!==false?1:0, prefs.missedCalls!==false?1:0, prefs.medicationAlerts!==false?1:0).run();
+  } catch (e) { console.error('D1 saveNotifPrefs error:', e.message); }
+}
+
+async function d1SaveBirthdayPrefs(env, deviceId, prefs) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare('INSERT INTO birthday_prefs (device_id, enabled, notify_time, days_before) VALUES (?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET enabled=excluded.enabled, notify_time=excluded.notify_time, days_before=excluded.days_before')
+      .bind(deviceId, prefs.enabled!==false?1:0, prefs.notifyTime||'09:00', JSON.stringify(prefs.daysBefore||[0,1,7])).run();
+  } catch (e) { console.error('D1 saveBirthdayPrefs error:', e.message); }
+}
+
+async function d1SaveEscalationConfig(env, deviceId, config) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare('INSERT INTO escalation_config (device_id, enabled, triggers, tiers) VALUES (?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET enabled=excluded.enabled, triggers=excluded.triggers, tiers=excluded.tiers')
+      .bind(deviceId, config.enabled!==false?1:0, JSON.stringify(config.triggers||{}), JSON.stringify(config.tiers||[])).run();
+  } catch (e) { console.error('D1 saveEscalationConfig error:', e.message); }
+}
+
 async function d1SaveGroups(env, deviceId, groups) {
   if (!env.KEN_DB) return;
   try {
@@ -2584,7 +2628,7 @@ export default {
           contactNames: body.contactNames || [],
           lastAlertSent: body.lastAlertSent || null
         };
-        // TODO: D1 write for offline-alerts (table needed)
+        try { await d1SaveOfflineAlerts(env, deviceId, alertSettings); } catch {}
         const session = await getSession(request, env);
         await logAudit(env, deviceId, session ? session.email : 'device', 'Updated offline alert settings', settings);
         return json({ success: true });
@@ -2623,7 +2667,7 @@ export default {
         return json({ offline: true, offlineMinutes, shouldAlert: false, reason: 'alert already sent' });
       }
       alertSettings.lastAlertSent = new Date().toISOString();
-      // TODO: D1 write for offline-alerts (table needed)
+      try { await d1SaveOfflineAlerts(env, deviceId, alertSettings); } catch {}
       return json({ offline: true, offlineMinutes, shouldAlert: true, contacts: alertSettings.contactNames });
     }
 
@@ -3096,7 +3140,7 @@ export default {
           missedCalls: body.missedCalls !== false,
           medicationAlerts: body.medicationAlerts !== false,
         };
-        // TODO: D1 write for notif-prefs (table needed)
+        try { await d1SaveNotifPrefs(env, auth.user.email, prefs); } catch {}
         return json({ success: true });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
@@ -3162,7 +3206,7 @@ export default {
           const medAlerts = await getMedAlerts(env, deviceId);
           medAlerts.push({ id: crypto.randomUUID(), reminderId, label, action, timestamp: new Date().toISOString(), resolved: false });
           if (medAlerts.length > 50) medAlerts.splice(0, medAlerts.length - 50);
-          // TODO: D1 write for med-alerts (table needed)
+          try { await d1SaveMedAlerts(env, deviceId, medAlerts); } catch {}
           // Email carers/admins
           const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
           const userName = deviceInfo.userName || 'The Ken user';
@@ -3211,7 +3255,7 @@ export default {
         alert.resolved = true;
         alert.resolvedBy = auth.user.email;
         alert.resolvedAt = new Date().toISOString();
-        // TODO: D1 write for med-alerts (table needed)
+        try { await d1SaveMedAlerts(env, deviceId, medAlerts); } catch {}
       }
       return json({ success: true });
     }
@@ -3230,7 +3274,7 @@ export default {
           notifyTime: body.notifyTime || '09:00', // HH:MM when to send reminder
           daysBefore: body.daysBefore || [0, 1, 7], // days before birthday to notify (0 = on the day)
         };
-        // TODO: D1 write for birthday-prefs (table needed)
+        try { await d1SaveBirthdayPrefs(env, deviceId, prefs); } catch {}
         await logAudit(env, deviceId, auth.user.email, 'Updated birthday reminder settings', prefs);
         return json({ success: true });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
@@ -4396,7 +4440,7 @@ export default {
             { role: 'hq', delayMinutes: 45, method: 'email' }
           ]
         };
-        // TODO: D1 write for escalation-config (table needed)
+        try { await d1SaveEscalationConfig(env, deviceId, config); } catch {}
         await logAudit(env, deviceId, auth.user.email, 'Updated escalation config', config);
         return json({ success: true });
       } catch {
@@ -4520,7 +4564,7 @@ export default {
 
         // Mark alert as sent
         alertSettings.lastAlertSent = new Date().toISOString();
-        // TODO: D1 write for offline-alerts (table needed)
+        try { await d1SaveOfflineAlerts(env, deviceId, alertSettings); } catch {}
       } catch {
         // Continue to next device on error
       }
