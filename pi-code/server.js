@@ -19,6 +19,15 @@ const DEVICE_KEY_FILE = path.join(__dirname, '.device-key');
 let DEVICE_API_KEY = '';
 try { DEVICE_API_KEY = fs.readFileSync(DEVICE_KEY_FILE, 'utf8').trim(); } catch {}
 
+// Local server auth token — prevents other processes on the Pi from accessing the API
+const LOCAL_AUTH_FILE = path.join(__dirname, '.local-token');
+let LOCAL_AUTH_TOKEN = '';
+try { LOCAL_AUTH_TOKEN = fs.readFileSync(LOCAL_AUTH_FILE, 'utf8').trim(); } catch {}
+if (!LOCAL_AUTH_TOKEN) {
+  LOCAL_AUTH_TOKEN = crypto.randomUUID();
+  fs.writeFileSync(LOCAL_AUTH_FILE, LOCAL_AUTH_TOKEN);
+}
+
 // Rolling screenshot buffer — keeps last 5 screen captures for feedback context
 const screenshotBuffer = [];
 const MAX_SCREENSHOTS = 5;
@@ -705,10 +714,18 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
 
-  // Return device ID
+  // Return device ID and local auth token (Electron uses this to authenticate subsequent requests)
   if (req.method === 'GET' && req.url === '/api/device-id') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ deviceId: DEVICE_ID, cloudUrl: CLOUD_API }));
+    res.end(JSON.stringify({ deviceId: DEVICE_ID, cloudUrl: CLOUD_API, token: LOCAL_AUTH_TOKEN }));
+    return;
+  }
+
+  // Authenticate all other endpoints with local token
+  const authToken = req.headers['x-ken-local-token'];
+  if (authToken !== LOCAL_AUTH_TOKEN) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized' }));
     return;
   }
 

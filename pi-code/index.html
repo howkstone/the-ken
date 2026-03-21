@@ -3959,6 +3959,32 @@
       loadContacts();
     }
 
+    // ===== LOCAL SERVER AUTH =====
+    // Fetch local auth token from Pi server and inject into all localhost requests
+    let localAuthToken = '';
+    (async function fetchLocalToken() {
+      try {
+        const resp = await fetch('http://localhost:3000/api/device-id', { cache: 'no-store' });
+        const data = await resp.json();
+        if (data.token) localAuthToken = data.token;
+      } catch {}
+    })();
+
+    // Intercept fetch to inject auth token for localhost:3000 requests
+    const _origFetch = window.fetch;
+    window.fetch = function(url, opts) {
+      if (typeof url === 'string' && url.includes('localhost:3000') && !url.endsWith('/api/device-id')) {
+        opts = opts || {};
+        opts.headers = opts.headers || {};
+        if (opts.headers instanceof Headers) {
+          opts.headers.set('X-Ken-Local-Token', localAuthToken);
+        } else {
+          opts.headers['X-Ken-Local-Token'] = localAuthToken;
+        }
+      }
+      return _origFetch.call(window, url, opts);
+    };
+
     // ===== INIT =====
     function init() {
       const setupDone = localStorage.getItem('ken-setup-done');

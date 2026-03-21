@@ -117,6 +117,37 @@ async function decryptObject(env, obj, fields) {
   return result;
 }
 
+// ===== DEVICE KEY HASHING (at-rest protection) =====
+// Device keys are high-entropy UUIDs — SHA-256 is sufficient (no need for PBKDF2)
+async function hashDeviceKey(rawKey) {
+  const encoder = new TextEncoder();
+  const hash = await crypto.subtle.digest('SHA-256', encoder.encode('ken-dk-salt:' + rawKey));
+  return 'DK:' + btoa(String.fromCharCode(...new Uint8Array(hash)));
+}
+
+async function storeDeviceKey(env, deviceId, rawKey) {
+  const hashed = await hashDeviceKey(rawKey);
+  await env.KEN_KV.put(`device-key:${deviceId}`, hashed);
+}
+
+async function verifyDeviceKey(env, deviceId, providedKey) {
+  if (!providedKey) return false;
+  const stored = await env.KEN_KV.get(`device-key:${deviceId}`);
+  if (!stored) return false;
+  if (stored.startsWith('DK:')) {
+    // Hashed key — compare hashes
+    const providedHash = await hashDeviceKey(providedKey);
+    return timingSafeEqual(stored, providedHash);
+  }
+  // Legacy plaintext key — compare directly, then migrate to hashed
+  if (timingSafeEqual(stored, providedKey)) {
+    // Migrate to hashed storage
+    try { await storeDeviceKey(env, deviceId, providedKey); } catch {}
+    return true;
+  }
+  return false;
+}
+
 // ===== PII TOKENISATION & ENCRYPTED STORAGE =====
 // Separate encryption key for PII token mappings (stored in KEN_PII namespace)
 // Even if KEN_KV is compromised, PII mappings remain encrypted without PII_KEY
@@ -301,8 +332,7 @@ export default {
       );
       if (!isPublicEndpoint) {
         const deviceKey = request.headers.get('X-Ken-Device-Key');
-        const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${scopedDeviceId}`) : null;
-        const isDeviceAuthed = deviceKey && storedKey && timingSafeEqual(deviceKey, storedKey);
+        const isDeviceAuthed = deviceKey ? await verifyDeviceKey(env, scopedDeviceId, deviceKey) : false;
         const session = await getSession(request, env);
         if (!isDeviceAuthed && !session) {
           return json({ error: 'Authentication required' }, 401);
@@ -729,8 +759,8 @@ export default {
     if (request.method === 'POST' && path.match(/^\/api\/audit\/[\w-]+\/log$/)) {
       const deviceId = path.split('/')[3];
       const deviceKey = request.headers.get('X-Ken-Device-Key');
-      const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      if (!deviceKey || !storedKey || !timingSafeEqual(deviceKey, storedKey)) {
+      const deviceKeyVerified = deviceKey ? await verifyDeviceKey(env, deviceId, deviceKey) : false;
+      if (!deviceKeyVerified) {
         return json({ error: 'Device authentication required' }, 401);
       }
       try {
@@ -768,8 +798,7 @@ export default {
       const deviceId = path.split('/')[3];
       // Require device key or session auth
       const qDevKey = request.headers.get('X-Ken-Device-Key');
-      const qStoredKey = qDevKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      const qDevAuthed = qDevKey && qStoredKey && timingSafeEqual(qDevKey, qStoredKey);
+      const qDevAuthed = qDevKey ? await verifyDeviceKey(env, deviceId, qDevKey) : false;
       const qSession = await getSession(request, env);
       if (!qDevAuthed && !qSession) return json({ error: 'Authentication required' }, 401);
       const queue = await env.KEN_KV.get(`queue:${deviceId}`, 'json') || [];
@@ -780,8 +809,7 @@ export default {
       const deviceId = path.split('/')[3];
       // SECURITY: require device key auth (only the Pi should ack its own queue)
       const ackDevKey = request.headers.get('X-Ken-Device-Key');
-      const ackStoredKey = ackDevKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      if (!(ackDevKey && ackStoredKey && ackDevKey === ackStoredKey)) {
+      if (!(await verifyDeviceKey(env, deviceId, ackDevKey))) {
         return json({ error: 'Device authentication required' }, 401);
       }
       await env.KEN_KV.delete(`queue:${deviceId}`);
@@ -944,8 +972,7 @@ export default {
 
         // Determine who is deleting
         const deviceKey = request.headers.get('X-Ken-Device-Key');
-        const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-        const isDevice = deviceKey && storedKey && timingSafeEqual(deviceKey, storedKey);
+        const isDevice = deviceKey ? await verifyDeviceKey(env, deviceId, deviceKey) : false;
         const session = await getSession(request, env);
 
         if (mode === 'for-everyone') {
@@ -1016,8 +1043,7 @@ export default {
       const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
       // Filter deleted messages based on viewer
       const deviceKey = request.headers.get('X-Ken-Device-Key');
-      const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      const isDevice = deviceKey && storedKey && timingSafeEqual(deviceKey, storedKey);
+      const isDevice = deviceKey ? await verifyDeviceKey(env, deviceId, deviceKey) : false;
       const session = await getSession(request, env);
       const filtered = history.filter(m => {
         if (m.deletedForEveryone) return false;
@@ -1135,8 +1161,7 @@ export default {
       const deviceId = path.split('/')[3];
       // SECURITY: require device key or authenticated session
       const callDevKey = request.headers.get('X-Ken-Device-Key');
-      const callStoredKey = callDevKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      if (!(callDevKey && callStoredKey && callDevKey === callStoredKey)) {
+      if (!(await verifyDeviceKey(env, deviceId, callDevKey))) {
         const auth = await requireAuth(request, env);
         if (auth.error) return auth.response;
       }
@@ -1416,8 +1441,7 @@ export default {
     if (request.method === 'GET' && path.match(/^\/api\/contacts\/[\w-]+\/emergency$/)) {
       const deviceId = path.split('/')[3];
       const emDeviceKey = request.headers.get('X-Ken-Device-Key');
-      const emStoredKey = emDeviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      const emIsDeviceAuthed = emDeviceKey && emStoredKey && emDeviceKey === emStoredKey;
+      const emIsDeviceAuthed = await verifyDeviceKey(env, deviceId, emDeviceKey);
       if (!emIsDeviceAuthed) {
         const auth = await requireAuth(request, env);
         if (auth.error) return auth.response;
@@ -1432,8 +1456,7 @@ export default {
       const deviceId = path.split('/')[3];
       // Check if device-key authenticated (Pi has full access)
       const medDeviceKey = request.headers.get('X-Ken-Device-Key');
-      const medStoredKey = medDeviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      const medIsDeviceAuthed = medDeviceKey && medStoredKey && medDeviceKey === medStoredKey;
+      const medIsDeviceAuthed = await verifyDeviceKey(env, deviceId, medDeviceKey);
       if (!medIsDeviceAuthed) {
         const auth = await requireAuth(request, env);
         if (auth.error) return auth.response;
@@ -1862,8 +1885,7 @@ export default {
       const deviceId = path.split('/')[3];
       // Check if device-key authenticated (Pi has full access)
       const screenDeviceKey = request.headers.get('X-Ken-Device-Key');
-      const screenStoredKey = screenDeviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      const screenIsDeviceAuthed = screenDeviceKey && screenStoredKey && screenDeviceKey === screenStoredKey;
+      const screenIsDeviceAuthed = await verifyDeviceKey(env, deviceId, screenDeviceKey);
       if (!screenIsDeviceAuthed) {
         const auth = await requireAuth(request, env);
         if (auth.error) return auth.response;
@@ -2006,8 +2028,7 @@ export default {
       const deviceId = path.split('/')[3];
       // SECURITY: require device key or admin/carer/hq session
       const devInfoKey = request.headers.get('X-Ken-Device-Key');
-      const devInfoStored = devInfoKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      if (!(devInfoKey && devInfoStored && devInfoKey === devInfoStored)) {
+      if (!(await verifyDeviceKey(env, deviceId, devInfoKey))) {
         const auth = await requireAdmin(request, env, deviceId);
         if (auth.error) return auth.response;
       }
@@ -2034,10 +2055,11 @@ export default {
         if (!oldId || !newId) return json({ error: 'oldId and newId required' }, 400);
         if (!/^[A-Z]\d{5}$/.test(newId)) return json({ error: 'newId must be format A12345' }, 400);
         // Require device key auth
-        const deviceKey = await env.KEN_KV.get(`device-key:${oldId}`);
-        if (!deviceKey) return json({ error: 'Unknown device' }, 404);
+        const hasKey = await env.KEN_KV.get(`device-key:${oldId}`);
+        if (!hasKey) return json({ error: 'Unknown device' }, 404);
         const providedKey = request.headers.get('X-Ken-Device-Key');
-        if (!providedKey || !timingSafeEqual(providedKey, deviceKey)) return json({ error: 'Device authentication required' }, 401);
+        const verified = await verifyDeviceKey(env, oldId, providedKey);
+        if (!verified) return json({ error: 'Device authentication required' }, 401);
         // Check new ID isn't taken
         const existingNew = await env.KEN_KV.get(`device:${newId}`, 'json');
         if (existingNew) return json({ error: 'New device ID already in use' }, 409);
@@ -2083,11 +2105,12 @@ export default {
     if (request.method === 'POST' && path.match(/^\/api\/heartbeat\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
       const now = new Date().toISOString();
-      let deviceApiKey = await env.KEN_KV.get(`device-key:${deviceId}`);
+      const hasStoredKey = await env.KEN_KV.get(`device-key:${deviceId}`);
       // If device key exists, require it in the request (prevents impersonation)
-      if (deviceApiKey) {
+      if (hasStoredKey) {
         const providedKey = request.headers.get('X-Ken-Device-Key');
-        if (!providedKey || !timingSafeEqual(providedKey, deviceApiKey)) {
+        const verified = await verifyDeviceKey(env, deviceId, providedKey);
+        if (!verified) {
           return json({ error: 'Device authentication required' }, 401);
         }
       } else {
@@ -2102,10 +2125,14 @@ export default {
         }
         // Consume the token (one-time use)
         await env.KEN_KV.delete(`provision-token:${provisionToken}`);
-        // Generate and return the device key
-        deviceApiKey = crypto.randomUUID() + '-' + crypto.randomUUID();
-        await env.KEN_KV.put(`device-key:${deviceId}`, deviceApiKey);
-        await logAudit(env, deviceId, tokenData.createdBy, 'Device provisioned via token', { label: tokenData.label });
+      }
+      // Generate key for new devices (first heartbeat)
+      let returnKey = null;
+      if (!hasStoredKey) {
+        const newKey = crypto.randomUUID() + '-' + crypto.randomUUID();
+        await storeDeviceKey(env, deviceId, newKey);
+        await logAudit(env, deviceId, 'system', 'Device provisioned via token', {});
+        returnKey = newKey;
       }
       // Heartbeat with lastSeen (TTL 600s = 10 min window with 5 min poll)
       await env.KEN_KV.put(`heartbeat:${deviceId}`, JSON.stringify({ online: true, lastSeen: now }), { expirationTtl: 600 });
@@ -2116,7 +2143,7 @@ export default {
         devices.push(deviceId);
         await env.KEN_KV.put('devices:all', JSON.stringify(devices));
       }
-      return json({ success: true, deviceKey: deviceApiKey });
+      return json({ success: true, deviceKey: returnKey });
     }
 
     // Separate endpoint for queue/alert processing (Pi calls this less frequently)
@@ -2268,8 +2295,7 @@ export default {
       const deviceId = path.split('/')[3];
       // Check if device-key authenticated (Pi has full access)
       const settingsDeviceKey = request.headers.get('X-Ken-Device-Key');
-      const settingsStoredKey = settingsDeviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      const settingsIsDeviceAuthed = settingsDeviceKey && settingsStoredKey && settingsDeviceKey === settingsStoredKey;
+      const settingsIsDeviceAuthed = await verifyDeviceKey(env, deviceId, settingsDeviceKey);
       if (!settingsIsDeviceAuthed) {
         const auth = await requireAuth(request, env);
         if (auth.error) return auth.response;
@@ -2443,8 +2469,7 @@ export default {
       const deviceId = path.split('/')[3];
       // SECURITY: require device key or authenticated session
       const vmReqKey = request.headers.get('X-Ken-Device-Key');
-      const vmReqStored = vmReqKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      if (!(vmReqKey && vmReqStored && vmReqKey === vmReqStored)) {
+      if (!(await verifyDeviceKey(env, deviceId, vmReqKey))) {
         const auth = await requireAuth(request, env);
         if (auth.error) return auth.response;
       }
@@ -2470,8 +2495,7 @@ export default {
       const deviceId = path.split('/')[3];
       // SECURITY: require device key or authenticated session with send:voicemail permission
       const vmStoreKey = request.headers.get('X-Ken-Device-Key');
-      const vmStoreStored = vmStoreKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      if (!(vmStoreKey && vmStoreStored && vmStoreKey === vmStoreStored)) {
+      if (!(await verifyDeviceKey(env, deviceId, vmStoreKey))) {
         const auth = await requireAuth(request, env);
         if (auth.error) return auth.response;
         const vmRole = getUserRole(auth.user, deviceId);
@@ -2692,8 +2716,7 @@ export default {
         if (!emoji || !allowedEmoji.includes(emoji)) return json({ error: 'Invalid emoji. Allowed: ' + allowedEmoji.join(' ') }, 400);
         // Determine reactor identity
         const deviceKey = request.headers.get('X-Ken-Device-Key');
-        const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-        const isDevice = deviceKey && storedKey && timingSafeEqual(deviceKey, storedKey);
+        const isDevice = deviceKey ? await verifyDeviceKey(env, deviceId, deviceKey) : false;
         const session = await getSession(request, env);
         let reactorName, reactorId;
         if (isDevice) {
@@ -3809,8 +3832,7 @@ export default {
         const keyParts = r2Key.split('/');
         if (keyParts.length >= 2) {
           const scopedDeviceId = keyParts[1];
-          const storedKey = await env.KEN_KV.get(`device-key:${scopedDeviceId}`);
-          isDeviceAuthed = storedKey && timingSafeEqual(deviceKey, storedKey);
+          isDeviceAuthed = await verifyDeviceKey(env, scopedDeviceId, deviceKey);
         }
       }
       if (!session && !isDeviceAuthed) {
