@@ -148,6 +148,98 @@ async function verifyDeviceKey(env, deviceId, providedKey) {
   return false;
 }
 
+// ===== D1 DATABASE HELPERS (Phase 1: Users, Devices) =====
+// These read from D1 with KV fallback during migration
+
+async function d1GetUser(env, email) {
+  if (!env.KEN_DB) return null;
+  try {
+    const row = await env.KEN_DB.prepare('SELECT * FROM users WHERE email = ?').bind(email.toLowerCase()).first();
+    if (!row) return null;
+    // Reconstruct KV-compatible user object
+    const devices = {};
+    const deviceRows = await env.KEN_DB.prepare('SELECT device_id, role FROM user_devices WHERE email = ?').bind(email.toLowerCase()).all();
+    for (const d of deviceRows.results) {
+      devices[d.device_id] = { role: d.role };
+    }
+    return {
+      email: row.email, name: row.name, phone: row.phone,
+      passwordHash: row.password_hash, passwordSalt: row.password_salt,
+      photo: row.photo, globalRole: row.global_role, poa: !!row.poa,
+      mfaEnabled: !!row.mfa_enabled, mfaSecret: row.mfa_secret,
+      mfaBackupCodes: row.mfa_backup_codes ? JSON.parse(row.mfa_backup_codes) : [],
+      consent: !!row.consent_accepted, consentPolicyVersion: row.consent_policy_version, consentAt: row.consent_at,
+      subscriptions: row.subscriptions ? JSON.parse(row.subscriptions) : {},
+      lastLogin: row.last_login, createdAt: row.created_at,
+      devices
+    };
+  } catch (e) { console.error('D1 getUser error:', e.message); return null; }
+}
+
+async function d1SaveUser(env, user) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare(`
+      INSERT INTO users (email, name, phone, password_hash, password_salt, photo, global_role, poa,
+        mfa_enabled, mfa_secret, mfa_backup_codes, consent_accepted, consent_policy_version, consent_at,
+        subscriptions, last_login, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(email) DO UPDATE SET
+        name=excluded.name, phone=excluded.phone, password_hash=excluded.password_hash,
+        password_salt=excluded.password_salt, photo=excluded.photo, global_role=excluded.global_role,
+        poa=excluded.poa, mfa_enabled=excluded.mfa_enabled, mfa_secret=excluded.mfa_secret,
+        mfa_backup_codes=excluded.mfa_backup_codes, consent_accepted=excluded.consent_accepted,
+        consent_policy_version=excluded.consent_policy_version, consent_at=excluded.consent_at,
+        subscriptions=excluded.subscriptions, last_login=excluded.last_login
+    `).bind(
+      user.email.toLowerCase(), user.name || '', user.phone || '',
+      user.passwordHash || '', user.passwordSalt || '', user.photo || '',
+      user.globalRole || null, user.poa ? 1 : 0,
+      user.mfaEnabled ? 1 : 0, user.mfaSecret || null,
+      user.mfaBackupCodes ? JSON.stringify(user.mfaBackupCodes) : null,
+      user.consent ? 1 : 0, user.consentPolicyVersion || null, user.consentAt || null,
+      user.subscriptions ? JSON.stringify(user.subscriptions) : '{}',
+      user.lastLogin || null, user.createdAt || new Date().toISOString()
+    ).run();
+    // Sync user_devices
+    if (user.devices) {
+      for (const [deviceId, data] of Object.entries(user.devices)) {
+        const role = typeof data === 'object' ? (data.role || 'standard') : 'standard';
+        await env.KEN_DB.prepare(
+          'INSERT INTO user_devices (email, device_id, role) VALUES (?, ?, ?) ON CONFLICT(email, device_id) DO UPDATE SET role=excluded.role'
+        ).bind(user.email.toLowerCase(), deviceId, role).run();
+      }
+    }
+  } catch (e) { console.error('D1 saveUser error:', e.message); }
+}
+
+async function d1GetDeviceUsers(env, deviceId) {
+  if (!env.KEN_DB) return [];
+  try {
+    const rows = await env.KEN_DB.prepare(
+      'SELECT u.email, u.name, u.phone, u.photo, u.last_login, u.global_role, ud.role FROM users u JOIN user_devices ud ON u.email = ud.email WHERE ud.device_id = ?'
+    ).bind(deviceId).all();
+    return rows.results.map(r => ({
+      email: r.email, name: r.name, phone: r.phone, photo: r.photo,
+      lastLogin: r.last_login, globalRole: r.global_role, role: r.role
+    }));
+  } catch (e) { console.error('D1 getDeviceUsers error:', e.message); return []; }
+}
+
+async function d1GetAllDevices(env) {
+  if (!env.KEN_DB) return [];
+  try {
+    const rows = await env.KEN_DB.prepare('SELECT device_id FROM devices').all();
+    return rows.results.map(r => r.device_id);
+  } catch (e) { console.error('D1 getAllDevices error:', e.message); return []; }
+}
+
+// Dual-write helper: saves user to both KV and D1
+async function saveUserDual(env, email, user) {
+  await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+  try { await d1SaveUser(env, user); } catch (e) { console.error('D1 dual-write error (non-fatal):', e.message); }
+}
+
 // ===== PII TOKENISATION & ENCRYPTED STORAGE =====
 // Separate encryption key for PII token mappings (stored in KEN_PII namespace)
 // Even if KEN_KV is compromised, PII mappings remain encrypted without PII_KEY
@@ -380,7 +472,7 @@ export default {
             productUpdates: { enabled: false, updatedAt: new Date().toISOString() },
           },
         };
-        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+        await saveUserDual(env, email, user);
         // Create session
         const token = crypto.randomUUID();
         await env.KEN_KV.put(`session:${token}`, JSON.stringify({ email: user.email, token, createdAt: new Date().toISOString() }), { expirationTtl: 2592000 });
@@ -421,7 +513,7 @@ export default {
           const { hash: newHash, salt: newSalt } = await hashPassword(password, user.passwordSalt || 'ken-salt-2026');
           user.passwordHash = newHash;
           user.passwordSalt = newSalt;
-          await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+          await saveUserDual(env, email, user);
         }
         // Check MFA
         if (user.mfaEnabled && user.mfaSecret) {
@@ -441,14 +533,14 @@ export default {
             if (backupIdx === -1) return json({ error: 'That authenticator code isn\'t right. Check your app for the latest code, or use a backup code.' }, 401);
             // Consume the backup code
             user.mfaBackupCodes.splice(backupIdx, 1);
-            await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+            await saveUserDual(env, email, user);
           }
         }
         const token = crypto.randomUUID();
         await env.KEN_KV.put(`session:${token}`, JSON.stringify({ email: user.email, token, createdAt: new Date().toISOString() }), { expirationTtl: 2592000 });
         // Track last login
         user.lastLogin = new Date().toISOString();
-        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+        await saveUserDual(env, email, user);
         const headers = { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Set-Cookie': `ken_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` };
         return new Response(JSON.stringify({ success: true }), { headers });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
@@ -492,7 +584,7 @@ export default {
           hashedBackupCodes.push(hash);
         }
         user.mfaBackupCodes = hashedBackupCodes;
-        await env.KEN_KV.put(`user:${setup.email}`, JSON.stringify(user));
+        await saveUserDual(env, setup.email, user);
         await env.KEN_KV.delete(`mfa-setup:${setupToken}`);
         const deviceIds = Object.keys(user.devices || {});
         if (deviceIds[0]) await logAudit(env, deviceIds[0], setup.email, 'Enabled MFA', {});
@@ -519,7 +611,7 @@ export default {
         delete user.mfaSecret;
         delete user.mfaPendingSecret;
         delete user.mfaBackupCodes;
-        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+        await saveUserDual(env, email, user);
         const deviceIds = Object.keys(user.devices || {});
         if (deviceIds[0]) await logAudit(env, deviceIds[0], email, 'Disabled MFA', {});
         return json({ success: true });
@@ -547,7 +639,7 @@ export default {
         await env.KEN_KV.put(`reset:${resetToken}`, JSON.stringify({ email: email.toLowerCase(), createdAt: new Date().toISOString() }), { expirationTtl: 900 });
         // Store token on user for reference
         user.resetToken = resetToken;
-        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+        await saveUserDual(env, email, user);
         // Try to send password reset email, but don't fail if email service is down
         let emailSent = false;
         try {
@@ -584,7 +676,7 @@ export default {
         user.passwordHash = newHash;
         user.passwordSalt = newSalt;
         delete user.resetToken;
-        await env.KEN_KV.put(`user:${reset.email}`, JSON.stringify(user));
+        await saveUserDual(env, reset.email, user);
         await env.KEN_KV.delete(`reset:${token}`);
         // Invalidate all existing sessions for this user
         try {
@@ -620,7 +712,7 @@ export default {
         user.passwordHash = newHash;
         user.passwordSalt = newSalt;
         delete user.resetToken;
-        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
+        await saveUserDual(env, email, user);
         // Invalidate all existing sessions
         try {
           const sessionList = await env.KEN_KV.list({ prefix: 'session:' });
@@ -1367,7 +1459,7 @@ export default {
           if (body.photo && body.photo.length > MAX_PHOTO_BASE64 * 1.4) return json({ error: 'Photo too large' }, 400);
           auth.user.photo = body.photo;
         }
-        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+        await saveUserDual(env, auth.user.email, auth.user);
         return json({ success: true });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
@@ -1396,7 +1488,7 @@ export default {
         if (!auth.user.devices) auth.user.devices = {};
         if (auth.user.devices[deviceId]) return json({ error: 'Device already linked to your account' }, 400);
         auth.user.devices[deviceId] = { role };
-        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+        await saveUserDual(env, auth.user.email, auth.user);
         await logAudit(env, deviceId, auth.user.email, 'Device added to account', { role });
         return json({ success: true, deviceId, role });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
@@ -1413,7 +1505,7 @@ export default {
         if (!validKeys.includes(key)) return json({ error: 'Invalid subscription key' }, 400);
         if (!auth.user.subscriptions) auth.user.subscriptions = {};
         auth.user.subscriptions[key] = { enabled: !!enabled, updatedAt: new Date().toISOString() };
-        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+        await saveUserDual(env, auth.user.email, auth.user);
         return json({ success: true, subscriptions: auth.user.subscriptions });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
@@ -1429,7 +1521,7 @@ export default {
         const targetUser = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (!targetUser) return json({ error: 'User not found' }, 404);
         targetUser.poa = !!hasPOA;
-        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(targetUser));
+        await saveUserDual(env, email, targetUser);
         if (deviceId) await logAudit(env, deviceId, auth.user.email, hasPOA ? 'Granted POA to user' : 'Revoked POA from user', { targetEmail: email });
         return json({ success: true });
       } catch {
@@ -1559,7 +1651,7 @@ export default {
           organisation: (body.organisation || '').trim(),
           registrationNumber: (body.registrationNumber || '').trim(),
         };
-        await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
+        await saveUserDual(env, auth.user.email, auth.user);
         return json({ success: true });
       } catch {
         return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
@@ -3179,7 +3271,7 @@ export default {
         if (!targetUser) return json({ error: 'User not found' }, 404);
         if (!targetUser.devices) targetUser.devices = {};
         targetUser.devices[deviceId] = { role };
-        await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(targetUser));
+        await saveUserDual(env, email, targetUser);
         await logAudit(env, deviceId, auth.user.email, 'Changed user role', { targetEmail: email, newRole: role });
         return json({ success: true });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
@@ -3201,7 +3293,7 @@ export default {
         if (!targetUser) return json({ error: 'User not found' }, 404);
         if (targetUser.devices && targetUser.devices[deviceId]) {
           delete targetUser.devices[deviceId];
-          await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(targetUser));
+          await saveUserDual(env, email, targetUser);
         }
         await logAudit(env, deviceId, auth.user.email, 'Revoked user access', { targetEmail: email });
         return json({ success: true });
@@ -3529,6 +3621,60 @@ export default {
 
         return json({ success: true, token, pii: piiData });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
+    }
+
+    // ===== KV → D1 MIGRATION (HQ-only, temporary) =====
+    if (request.method === 'POST' && path === '/api/admin/migrate-d1') {
+      const auth = await requireAuth(request, env);
+      if (auth.error) return auth.response;
+      if (auth.user.globalRole !== 'hq') return json({ error: 'HQ access required' }, 403);
+      if (!env.KEN_DB) return json({ error: 'D1 database not configured' }, 500);
+
+      const results = { users: 0, devices: 0, userDevices: 0, deviceKeys: 0, invites: 0, errors: [] };
+      try {
+        // Migrate devices
+        const devicesAll = await env.KEN_KV.get('devices:all', 'json') || [];
+        for (const deviceId of devicesAll) {
+          try {
+            const info = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
+            await env.KEN_DB.prepare('INSERT OR IGNORE INTO devices (device_id, user_name, created_at, extra) VALUES (?, ?, ?, ?)')
+              .bind(deviceId, info.userName || 'The Ken', info.createdAt || new Date().toISOString(), JSON.stringify(info)).run();
+            results.devices++;
+            // Device key
+            const keyHash = await env.KEN_KV.get(`device-key:${deviceId}`);
+            if (keyHash) {
+              await env.KEN_DB.prepare('INSERT OR IGNORE INTO device_keys (device_id, key_hash) VALUES (?, ?)').bind(deviceId, keyHash).run();
+              results.deviceKeys++;
+            }
+          } catch (e) { results.errors.push(`device:${deviceId}: ${e.message}`); }
+        }
+        // Migrate users
+        const userList = await env.KEN_KV.list({ prefix: 'user:' });
+        for (const key of userList.keys) {
+          try {
+            const user = await env.KEN_KV.get(key.name, 'json');
+            if (!user || !user.email) continue;
+            await d1SaveUser(env, user);
+            results.users++;
+            if (user.devices) results.userDevices += Object.keys(user.devices).length;
+          } catch (e) { results.errors.push(`${key.name}: ${e.message}`); }
+        }
+        // Migrate invites
+        const inviteList = await env.KEN_KV.list({ prefix: 'invite:' });
+        for (const key of inviteList.keys) {
+          try {
+            const invite = await env.KEN_KV.get(key.name, 'json');
+            if (!invite) continue;
+            const parts = key.name.replace('invite:', '').split(':');
+            const deviceId = parts[0];
+            const email = parts.slice(1).join(':');
+            await env.KEN_DB.prepare('INSERT OR IGNORE INTO invites (device_id, email, role, invited_by, created_at) VALUES (?, ?, ?, ?, ?)')
+              .bind(deviceId, email, invite.role || 'standard', invite.invitedBy || null, invite.createdAt || new Date().toISOString()).run();
+            results.invites++;
+          } catch (e) { results.errors.push(`${key.name}: ${e.message}`); }
+        }
+      } catch (e) { results.errors.push(`Fatal: ${e.message}`); }
+      return json(results);
     }
 
     // ===== DEVICE PROVISIONING TOKENS (HQ-only) =====
@@ -6561,7 +6707,9 @@ async function getSession(request, env) {
 async function requireAuth(request, env) {
   const session = await getSession(request, env);
   if (!session) return { error: true, response: json({ error: 'Not authenticated' }, 401) };
-  const user = await env.KEN_KV.get(`user:${session.email}`, 'json');
+  // Try D1 first, fall back to KV
+  let user = await d1GetUser(env, session.email);
+  if (!user) user = await env.KEN_KV.get(`user:${session.email}`, 'json');
   if (!user) return { error: true, response: json({ error: 'User not found' }, 401) };
   return { error: false, user, session };
 }
