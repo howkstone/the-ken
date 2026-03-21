@@ -296,7 +296,8 @@ export default {
         (request.method === 'POST' && path === `/api/feedback/${scopedDeviceId}`) ||
         (request.method === 'POST' && path.startsWith(`/api/heartbeat/${scopedDeviceId}`)) ||
         (request.method === 'GET' && path.startsWith(`/api/heartbeat/${scopedDeviceId}`)) ||
-        (request.method === 'GET' && path.startsWith(`/api/check-offline/${scopedDeviceId}`))
+        (request.method === 'GET' && path.startsWith(`/api/check-offline/${scopedDeviceId}`)) ||
+        (request.method === 'POST' && path === '/api/device/migrate-id')
       );
       if (!isPublicEndpoint) {
         const deviceKey = request.headers.get('X-Ken-Device-Key');
@@ -312,15 +313,15 @@ export default {
     // ===== AUTH ENDPOINTS =====
     if (request.method === 'POST' && path === '/api/auth/register') {
       const rl = await checkRateLimit(env, request, 'register', 5, 300);
-      if (rl.limited) return json({ error: 'Too many attempts. Try again later.' }, 429);
+      if (rl.limited) return json({ error: 'Too many attempts. Please wait a few minutes and try again.' }, 429);
       try {
         const body = await request.json();
         const { email, password, name, phone, deviceId, consent, policyVersion } = body;
-        if (!email || !password || !name) return json({ error: 'Email, password and name are required' }, 400);
-        if (!consent) return json({ error: 'You must agree to the Privacy Policy and Terms to create an account' }, 400);
-        if (password.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400);
+        if (!email || !password || !name) return json({ error: 'Please fill in your name, email address, and password.' }, 400);
+        if (!consent) return json({ error: 'You must agree to the Privacy Policy and Terms to create an account.' }, 400);
+        if (password.length < 8) return json({ error: 'Password must be at least 8 characters long.' }, 400);
         const existing = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
-        if (existing) return json({ error: 'An account with this email already exists' }, 400);
+        if (existing) return json({ error: 'An account with this email address already exists. Try signing in instead.' }, 400);
         const { hash: passwordHash, salt: passwordSalt } = await hashPassword(password);
         const devices = {};
         if (deviceId) {
@@ -354,9 +355,9 @@ export default {
         const token = crypto.randomUUID();
         await env.KEN_KV.put(`session:${token}`, JSON.stringify({ email: user.email, token, createdAt: new Date().toISOString() }), { expirationTtl: 2592000 });
         if (deviceId) await logAudit(env, deviceId, user.email, 'Account created', { role: devices[deviceId]?.role || 'standard' });
-        const headers = { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Set-Cookie': `ken_session=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000` };
+        const headers = { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Set-Cookie': `ken_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` };
         return new Response(JSON.stringify({ success: true }), { headers });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     if (request.method === 'POST' && path === '/api/auth/login') {
@@ -365,11 +366,11 @@ export default {
       try {
         const body = await request.json();
         const { email, password, totpCode } = body;
-        if (!email || !password) return json({ error: 'Email and password are required' }, 400);
+        if (!email || !password) return json({ error: 'Please enter your email address and password.' }, 400);
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
-        if (!user) return json({ error: 'Invalid email or password' }, 401);
+        if (!user) return json({ error: 'That email and password combination doesn\'t match our records. Please check and try again.' }, 401);
         const pwResult = await verifyPassword(password, user.passwordHash, user.passwordSalt || 'ken-salt-2026');
-        if (!pwResult.valid) return json({ error: 'Invalid email or password' }, 401);
+        if (!pwResult.valid) return json({ error: 'That email and password combination doesn\'t match our records. Please check and try again.' }, 401);
         // Rehash with PBKDF2 if still using legacy SHA-256
         if (pwResult.needsRehash) {
           const { hash: newHash, salt: newSalt } = await hashPassword(password, user.passwordSalt || 'ken-salt-2026');
@@ -380,7 +381,7 @@ export default {
         // Check MFA
         if (user.mfaEnabled && user.mfaSecret) {
           if (!totpCode) {
-            return json({ mfaRequired: true, error: 'MFA code required' }, 403);
+            return json({ mfaRequired: true, error: 'Please enter your authenticator code to sign in.' }, 403);
           }
           // Try TOTP first, then backup codes
           const validTotp = await verifyTOTP(user.mfaSecret, totpCode);
@@ -392,7 +393,7 @@ export default {
             for (let i = 0; i < (user.mfaBackupCodes || []).length; i++) {
               if (timingSafeEqual(user.mfaBackupCodes[i], codeHash) || timingSafeEqual(user.mfaBackupCodes[i], legacyCodeHash)) { backupIdx = i; break; }
             }
-            if (backupIdx === -1) return json({ error: 'Invalid MFA code' }, 401);
+            if (backupIdx === -1) return json({ error: 'That authenticator code isn\'t right. Check your app for the latest code, or use a backup code.' }, 401);
             // Consume the backup code
             user.mfaBackupCodes.splice(backupIdx, 1);
             await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
@@ -403,9 +404,9 @@ export default {
         // Track last login
         user.lastLogin = new Date().toISOString();
         await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
-        const headers = { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Set-Cookie': `ken_session=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=2592000` };
+        const headers = { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Set-Cookie': `ken_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000` };
         return new Response(JSON.stringify({ success: true }), { headers });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== MFA SETUP =====
@@ -451,7 +452,7 @@ export default {
         const deviceIds = Object.keys(user.devices || {});
         if (deviceIds[0]) await logAudit(env, deviceIds[0], setup.email, 'Enabled MFA', {});
         return json({ success: true, backupCodes });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // Disable also uses email+password directly (no cookie needed)
@@ -477,7 +478,7 @@ export default {
         const deviceIds = Object.keys(user.devices || {});
         if (deviceIds[0]) await logAudit(env, deviceIds[0], email, 'Disabled MFA', {});
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     if (request.method === 'GET' && path === '/api/auth/mfa/status') {
@@ -493,7 +494,7 @@ export default {
       try {
         const body = await request.json();
         const { email } = body;
-        if (!email) return json({ error: 'Email is required' }, 400);
+        if (!email) return json({ error: 'Please enter your email address.' }, 400);
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         // Always return success (don't reveal if account exists)
         if (!user) return json({ success: true });
@@ -502,16 +503,24 @@ export default {
         // Store token on user for reference
         user.resetToken = resetToken;
         await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
-        // Send password reset email
-        await sendEmail(env, email.toLowerCase(),
-          'Reset your password \u2014 The Ken',
-          'Reset your password',
-          '<p style="color:#6B6459;line-height:1.7;">Click the button below to set a new password. This link expires in 15 minutes.</p>' +
-          '<a href="https://theken.uk/portal/?reset=' + resetToken + '" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Reset Password</a>' +
-          '<p style="color:#6B6459;font-size:13px;margin-top:24px;">If you didn\'t request this, you can safely ignore this email.</p>'
-        );
-        return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+        // Try to send password reset email, but don't fail if email service is down
+        let emailSent = false;
+        try {
+          await sendEmail(env, email.toLowerCase(),
+            'Reset your password \u2014 The Ken',
+            'Reset your password',
+            '<p style="color:#6B6459;line-height:1.7;">Click the button below to set a new password. This link expires in 15 minutes.</p>' +
+            '<a href="https://theken.uk/portal/?reset=' + resetToken + '" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Reset Password</a>' +
+            '<p style="color:#6B6459;font-size:13px;margin-top:24px;">If you didn\'t request this, you can safely ignore this email.</p>'
+          );
+          emailSent = true;
+        } catch { /* email service unavailable — fall back to direct token */ }
+        if (emailSent) {
+          return json({ success: true });
+        }
+        // Email failed — return token directly so user can still reset
+        return json({ success: true, resetToken });
+      } catch (e) { return json({ error: e.message || 'Invalid request' }, 400); }
     }
 
     if (request.method === 'POST' && path === '/api/auth/reset-password') {
@@ -520,12 +529,12 @@ export default {
       try {
         const body = await request.json();
         const { token, password } = body;
-        if (!token || !password) return json({ error: 'Token and password are required' }, 400);
-        if (password.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400);
+        if (!token || !password) return json({ error: 'Please enter your new password.' }, 400);
+        if (password.length < 8) return json({ error: 'Password must be at least 8 characters long.' }, 400);
         const reset = await env.KEN_KV.get(`reset:${token}`, 'json');
-        if (!reset) return json({ error: 'Reset link has expired. Please request a new one.' }, 400);
+        if (!reset) return json({ error: 'This reset link has expired. Reset links last 15 minutes. Please go back and request a new one.' }, 400);
         const user = await env.KEN_KV.get(`user:${reset.email}`, 'json');
-        if (!user) return json({ error: 'Account not found' }, 400);
+        if (!user) return json({ error: 'We couldn\'t find the account linked to this reset link. Please try creating a new account.' }, 400);
         const { hash: newHash, salt: newSalt } = await hashPassword(password);
         user.passwordHash = newHash;
         user.passwordSalt = newSalt;
@@ -545,23 +554,23 @@ export default {
         const deviceIds = Object.keys(user.devices || {});
         if (deviceIds[0]) await logAudit(env, deviceIds[0], reset.email, 'Password reset', {});
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { return json({ error: 'Something went wrong while resetting your password. Please try again or request a new reset link.' }, 400); }
     }
 
     // Reset password using MFA code (no email link needed)
     if (request.method === 'POST' && path === '/api/auth/reset-with-mfa') {
       const rl = await checkRateLimit(env, request, 'mfa-reset', 5, 300);
-      if (rl.limited) return json({ error: 'Too many attempts. Try again later.' }, 429);
+      if (rl.limited) return json({ error: 'Too many attempts. Please wait a few minutes and try again.' }, 429);
       try {
         const body = await request.json();
         const { email, totpCode, newPassword } = body;
-        if (!email || !totpCode || !newPassword) return json({ error: 'Email, authenticator code, and new password are required' }, 400);
-        if (newPassword.length < 8) return json({ error: 'Password must be at least 8 characters' }, 400);
+        if (!email || !totpCode || !newPassword) return json({ error: 'Please fill in your email, authenticator code, and new password.' }, 400);
+        if (newPassword.length < 8) return json({ error: 'Password must be at least 8 characters long.' }, 400);
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
-        if (!user) return json({ error: 'Account not found' }, 404);
-        if (!user.mfaEnabled || !user.mfaSecret) return json({ error: 'MFA is not enabled on this account. Use the email reset link instead.' }, 400);
+        if (!user) return json({ error: 'We couldn\'t find an account with that email address.' }, 404);
+        if (!user.mfaEnabled || !user.mfaSecret) return json({ error: 'Two-factor authentication isn\'t set up on this account. Please use the email reset link instead.' }, 400);
         const validTotp = await verifyTOTP(user.mfaSecret, totpCode);
-        if (!validTotp) return json({ error: 'Invalid authenticator code' }, 401);
+        if (!validTotp) return json({ error: 'That authenticator code isn\'t right. Check your authenticator app and try the latest code.' }, 401);
         const { hash: newHash, salt: newSalt } = await hashPassword(newPassword);
         user.passwordHash = newHash;
         user.passwordSalt = newSalt;
@@ -580,7 +589,7 @@ export default {
         const deviceIds = Object.keys(user.devices || {});
         if (deviceIds[0]) await logAudit(env, deviceIds[0], email.toLowerCase(), 'Password reset via MFA', {});
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== FEEDBACK (all devices — for head office) =====
@@ -606,7 +615,7 @@ export default {
       const cookie = request.headers.get('Cookie') || '';
       const match = cookie.match(/ken_session=([^;]+)/);
       if (match) await env.KEN_KV.delete(`session:${match[1]}`);
-      const headers = { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Set-Cookie': 'ken_session=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0' };
+      const headers = { ...CORS_HEADERS, 'Content-Type': 'application/json', 'Set-Cookie': 'ken_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0' };
       return new Response(JSON.stringify({ success: true }), { headers });
     }
 
@@ -671,7 +680,7 @@ export default {
           '<a href="' + registerUrl + '" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Create Account</a>'
         );
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== AUDIT LOG ENDPOINTS =====
@@ -706,7 +715,7 @@ export default {
       const deviceId = path.split('/')[3];
       const deviceKey = request.headers.get('X-Ken-Device-Key');
       const storedKey = deviceKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
-      if (!deviceKey || !storedKey || deviceKey !== storedKey) {
+      if (!deviceKey || !storedKey || !timingSafeEqual(deviceKey, storedKey)) {
         return json({ error: 'Device authentication required' }, 401);
       }
       try {
@@ -715,7 +724,7 @@ export default {
         if (!action) return json({ error: 'Action required' }, 400);
         await logAudit(env, deviceId, 'device', action, details || {});
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== SETTINGS QUEUE (offline changes) =====
@@ -737,11 +746,17 @@ export default {
         queue.push({ id: crypto.randomUUID(), ...body, queuedAt: new Date().toISOString() });
         await env.KEN_KV.put(`queue:${deviceId}`, JSON.stringify(queue));
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     if (request.method === 'GET' && path.match(/^\/api\/settings\/[\w-]+\/queue$/)) {
       const deviceId = path.split('/')[3];
+      // Require device key or session auth
+      const qDevKey = request.headers.get('X-Ken-Device-Key');
+      const qStoredKey = qDevKey ? await env.KEN_KV.get(`device-key:${deviceId}`) : null;
+      const qDevAuthed = qDevKey && qStoredKey && timingSafeEqual(qDevKey, qStoredKey);
+      const qSession = await getSession(request, env);
+      if (!qDevAuthed && !qSession) return json({ error: 'Authentication required' }, 401);
       const queue = await env.KEN_KV.get(`queue:${deviceId}`, 'json') || [];
       return json({ queue });
     }
@@ -851,7 +866,7 @@ export default {
         }
         if (updated > 0) await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
         return json({ success: true, updated });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== MESSAGE STATUS: READ (Pi calls when User views a message) =====
@@ -873,7 +888,7 @@ export default {
           await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
         }
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== READ RECEIPTS TOGGLE (Admin/Carer only) =====
@@ -888,7 +903,7 @@ export default {
         await env.KEN_KV.put(`read-receipts:${deviceId}`, JSON.stringify({ enabled: body.enabled !== false }));
         await logAudit(env, deviceId, auth.user.email, 'Updated read receipts setting', { enabled: body.enabled !== false });
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     if (request.method === 'GET' && path.match(/^\/api\/settings\/[\w-]+\/read-receipts$/)) {
@@ -944,7 +959,7 @@ export default {
         }
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== REPLY (from device — goes to history only, not pending) =====
@@ -976,7 +991,7 @@ export default {
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1015,7 +1030,7 @@ export default {
           timestamp: new Date().toISOString()
         }), { expirationTtl: 15 });
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== TYPING INDICATOR: GET (check if someone is typing) =====
@@ -1089,7 +1104,7 @@ export default {
         }
         return json({ error: 'roomUrl required' }, 400);
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1124,7 +1139,7 @@ export default {
         await env.KEN_KV.put(`call:${deviceId}`, JSON.stringify(call), { expirationTtl: 120 });
         return json({ success: true, call: { id: call.id, roomUrl: call.roomUrl } });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1166,7 +1181,7 @@ export default {
         await env.KEN_KV.put(`outbound:${deviceId}`, JSON.stringify(outbound), { expirationTtl: 120 });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1194,7 +1209,7 @@ export default {
         await logAudit(env, deviceId, session ? session.email : 'device', 'Synced contacts', { count: (body.contacts || []).length });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1225,7 +1240,7 @@ export default {
         await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1248,7 +1263,7 @@ export default {
         await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(filtered));
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1272,7 +1287,7 @@ export default {
         await logAudit(env, deviceId, session ? session.email : 'unknown', isEmergencyContact ? 'Marked emergency contact' : 'Unmarked emergency contact', { contactName: contact.name });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1295,7 +1310,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, hasPOA ? 'Set POA on contact' : 'Removed POA from contact', { contactName: contact.name });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1314,7 +1329,7 @@ export default {
         }
         await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== ADD DEVICE TO EXISTING ACCOUNT =====
@@ -1344,7 +1359,7 @@ export default {
         await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
         await logAudit(env, deviceId, auth.user.email, 'Device added to account', { role });
         return json({ success: true, deviceId, role });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== SUBSCRIPTION PREFERENCES =====
@@ -1360,7 +1375,7 @@ export default {
         auth.user.subscriptions[key] = { enabled: !!enabled, updatedAt: new Date().toISOString() };
         await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
         return json({ success: true, subscriptions: auth.user.subscriptions });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     if (request.method === 'POST' && path === '/api/auth/poa') {
@@ -1378,7 +1393,7 @@ export default {
         if (deviceId) await logAudit(env, deviceId, auth.user.email, hasPOA ? 'Granted POA to user' : 'Revoked POA from user', { targetEmail: email });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1435,7 +1450,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, 'Updated medical info', { fields: Object.keys(body).filter(k => body[k] !== undefined) });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1469,7 +1484,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, 'Added care note', { preview: newNote.slice(0, 50) });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1509,7 +1524,7 @@ export default {
         await env.KEN_KV.put(`user:${auth.user.email}`, JSON.stringify(auth.user));
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1544,7 +1559,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, 'Updated patient details', {});
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1580,7 +1595,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, 'Updated inactivity alert settings', { enabled: alerts.enabled, threshold: alerts.thresholdMinutes });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1686,7 +1701,7 @@ export default {
         }
         await logAudit(env, allDevices[0] || 'system', auth.user.email, 'HQ broadcast sent', { text: text.slice(0, 50), deviceCount: sent });
         return json({ success: true, deviceCount: sent });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // HQ request access to private content
@@ -1731,7 +1746,7 @@ export default {
         }
         return json({ success: true, requestId: rid });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1765,7 +1780,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, approved ? 'Approved HQ access' : 'Denied HQ access', { requestId, contentType: req_item.contentType, hqEmail: req_item.hqEmail });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1854,7 +1869,7 @@ export default {
         await env.KEN_KV.put(`screen:frame:${deviceId}`, body.frame, { expirationTtl: 30 });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1889,7 +1904,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, 'Scheduled voicemail', { scheduledFor });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1946,7 +1961,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, 'Added reminder', { label: reminder.label, time: reminder.time });
         return json({ success: true, reminder });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -1972,7 +1987,7 @@ export default {
     }
 
     // ===== DEVICE INFO =====
-    if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+$/)) {
+    if (request.method === 'POST' && path.match(/^\/api\/device\/[\w-]+$/) && path !== '/api/device/migrate-id') {
       const deviceId = path.split('/')[3];
       // SECURITY: require device key or admin/carer/hq session
       const devInfoKey = request.headers.get('X-Ken-Device-Key');
@@ -1986,7 +2001,7 @@ export default {
         await env.KEN_KV.put(`device:${deviceId}`, JSON.stringify(body));
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2139,7 +2154,7 @@ export default {
         await logAudit(env, deviceId, session ? session.email : 'device', 'Updated offline alert settings', settings);
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2211,7 +2226,7 @@ export default {
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
         return json({ success: true, alertsSent });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2223,7 +2238,7 @@ export default {
         await env.KEN_KV.put(`callhistory:${deviceId}`, JSON.stringify(body));
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2253,7 +2268,7 @@ export default {
         await logAudit(env, deviceId, session ? session.email : 'device', 'Updated device settings', body);
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2319,7 +2334,7 @@ export default {
         await logAudit(env, deviceId, session ? session.email : 'device', 'Uploaded photo', { caption: (caption || '').trim() });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2387,7 +2402,7 @@ export default {
         await logAudit(env, deviceId, session ? session.email : (body.from || 'device'), 'Submitted feedback', { type: body.type || 'text' });
         return json({ success: true, ticketId: body.id });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2443,7 +2458,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, 'Replied to feedback ticket', { ticketId });
         return json({ success: true, reply });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2470,7 +2485,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, 'Updated feedback ticket status', { ticketId, status: body.status });
         return json({ success: true, status: ticket.status });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2505,7 +2520,7 @@ export default {
         await env.KEN_KV.put(`voicemail-req:${deviceId}`, JSON.stringify({ voicemailRequested: true, from: from || '' }), { expirationTtl: 120 });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2589,7 +2604,7 @@ export default {
         await env.KEN_KV.delete(`voicemail-req:${deviceId}`);
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -2666,7 +2681,7 @@ export default {
         const body = await request.json();
         await env.KEN_KV.put(`vm-read-receipts:${deviceId}`, JSON.stringify({ enabled: !!body.enabled }));
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     if (request.method === 'GET' && path.match(/^\/api\/voicemail\/[\w-]+\/read-receipts$/)) {
@@ -2728,7 +2743,7 @@ export default {
         };
         await env.KEN_KV.put(`notif-prefs:${auth.user.email}`, JSON.stringify(prefs));
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== MESSAGE REACTIONS (emoji) =====
@@ -2767,7 +2782,7 @@ export default {
         msg.reactions.push({ emoji, reactorName, reactorId, reactedAt: new Date().toISOString() });
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== MEDICATION REMINDER RESPONSE (from device) =====
@@ -2816,7 +2831,7 @@ export default {
           }
         }
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== MEDICATION ALERTS (for portal notification bell) =====
@@ -2862,7 +2877,7 @@ export default {
         await env.KEN_KV.put(`birthday-prefs:${deviceId}`, JSON.stringify(prefs));
         await logAudit(env, deviceId, auth.user.email, 'Updated birthday reminder settings', prefs);
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     if (request.method === 'GET' && path.match(/^\/api\/settings\/[\w-]+\/birthdays$/)) {
@@ -2899,7 +2914,7 @@ export default {
         await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(groups));
         await logAudit(env, deviceId, auth.user.email, 'Created group', { groupName: group.name, memberCount: group.members.length });
         return json({ success: true, group });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // List groups for a device
@@ -2944,7 +2959,7 @@ export default {
         await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(groups));
         await logAudit(env, deviceId, auth.user.email, 'Updated group', { groupId, groupName: group.name });
         return json({ success: true, group });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // Delete group
@@ -3004,7 +3019,7 @@ export default {
         if (history.length > 100) history.splice(0, history.length - 100);
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
         return json({ success: true, message: { id: message.id } });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== SCHEDULED MESSAGES =====
@@ -3034,7 +3049,7 @@ export default {
         await env.KEN_KV.put(`scheduled-msgs:${deviceId}`, JSON.stringify(scheduled));
         await logAudit(env, deviceId, auth.user.email, 'Scheduled message', { scheduledFor, preview: text.slice(0, 50) });
         return json({ success: true, id: item.id });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // List scheduled messages
@@ -3210,7 +3225,7 @@ export default {
         await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(targetUser));
         await logAudit(env, deviceId, auth.user.email, 'Changed user role', { targetEmail: email, newRole: role });
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // Revoke a user's access to this device
@@ -3233,7 +3248,7 @@ export default {
         }
         await logAudit(env, deviceId, auth.user.email, 'Revoked user access', { targetEmail: email });
         return json({ success: true });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== USER DELETION (GDPR-compliant tokenisation) =====
@@ -3556,7 +3571,7 @@ export default {
         await env.KEN_KV.put('audit:pii-access', JSON.stringify(globalAudit));
 
         return json({ success: true, token, pii: piiData });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // ===== DEVICE PROVISIONING TOKENS (HQ-only) =====
@@ -3777,7 +3792,7 @@ export default {
         await env.KEN_KV.put(`check-ins:${deviceId}:${auth.user.email}`, JSON.stringify(checkIns));
         await logAudit(env, deviceId, auth.user.email, 'Created check-in schedule', { frequency, type, time: preferredTime });
         return json({ success: true, checkIn: item });
-      } catch { return json({ error: 'Invalid request' }, 400); }
+      } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
 
     // Cross-patient check-in overview (all devices for this carer)
@@ -3969,7 +3984,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, 'Updated escalation config', config);
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -3994,7 +4009,7 @@ export default {
         await logAudit(env, deviceId, auth.user.email, 'Acknowledged escalation', { triggerType });
         return json({ success: true });
       } catch {
-        return json({ error: 'Invalid request' }, 400);
+        return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
       }
     }
 
@@ -4518,127 +4533,7 @@ export default {
       }
     } catch {} // Breach detection should never break the cron
 
-    // ===== DAILY SUMMARY EMAIL (8pm UTC) =====
-    // Runs within the 2-minute cron but only sends once per day
-    try {
-      const nowDate = new Date();
-      const utcHour = nowDate.getUTCHours();
-      const utcMinute = nowDate.getUTCMinutes();
-      const totalMinutes = utcHour * 60 + utcMinute;
-      // Check if between 19:50 and 20:10 UTC
-      if (totalMinutes >= 1190 && totalMinutes <= 1210) {
-        const summaryDate = nowDate.toISOString().slice(0, 10);
-        const sentKey = `daily-summary-sent:${summaryDate}`;
-        const alreadySent = await env.KEN_KV.get(sentKey);
-        if (!alreadySent) {
-          // Mark as sent immediately to prevent duplicate sends from parallel cron runs
-          await env.KEN_KV.put(sentKey, new Date().toISOString(), { expirationTtl: 86400 });
-
-          const dayStart = new Date(summaryDate + 'T00:00:00Z').getTime();
-          const nowMs = Date.now();
-
-          for (const deviceId of devices) {
-            try {
-              // Gather device data
-              const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
-              const userName = deviceInfo.userName || 'The Ken';
-              const hb = await env.KEN_KV.get(`heartbeat:${deviceId}`, 'json');
-              const lastTime = await env.KEN_KV.get(`heartbeat-time:${deviceId}`);
-              const isOnline = !!hb;
-              const lastSeen = hb ? (hb.lastSeen || null) : (lastTime || null);
-
-              // Calls today
-              const callHistoryData = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || {};
-              const allCalls = callHistoryData.calls || [];
-              const callsToday = allCalls.filter(c => c.timestamp && new Date(c.timestamp).getTime() >= dayStart);
-              const missedToday = callsToday.filter(c => c.status === 'missed').length;
-
-              // Messages received today (replies from device)
-              const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
-              const messagesToday = history.filter(m => !m.isReply && m.sentAt && new Date(m.sentAt).getTime() >= dayStart && !m.deletedForEveryone).length;
-              const repliesToday = history.filter(m => m.isReply && m.sentAt && new Date(m.sentAt).getTime() >= dayStart && !m.deletedForEveryone).length;
-
-              // Unresolved medication alerts
-              const medAlerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
-              const unresolvedMed = medAlerts.filter(a => !a.resolved);
-
-              // Format last seen
-              let lastSeenText = 'Unknown';
-              if (isOnline) {
-                lastSeenText = 'Online now';
-              } else if (lastSeen) {
-                const ago = Math.floor((nowMs - new Date(lastSeen).getTime()) / 60000);
-                if (ago < 60) lastSeenText = ago + ' minute' + (ago !== 1 ? 's' : '') + ' ago';
-                else if (ago < 1440) lastSeenText = Math.floor(ago / 60) + ' hour' + (Math.floor(ago / 60) !== 1 ? 's' : '') + ' ago';
-                else lastSeenText = Math.floor(ago / 1440) + ' day' + (Math.floor(ago / 1440) !== 1 ? 's' : '') + ' ago';
-              }
-
-              // Build status indicator
-              const statusDot = isOnline
-                ? '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#22C55E;margin-right:8px;"></span>'
-                : '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#EF4444;margin-right:8px;"></span>';
-
-              // Build med alerts section
-              let medSection = '';
-              if (unresolvedMed.length > 0) {
-                medSection = '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">' +
-                  '<span style="color:#EF4444;font-weight:500;">Medication alerts</span></td>' +
-                  '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;">' +
-                  '<span style="background:rgba(239,68,68,0.12);color:#EF4444;padding:4px 12px;border-radius:8px;font-weight:500;">' +
-                  unresolvedMed.length + ' unresolved</span></td></tr>';
-              }
-
-              const emailBody =
-                '<div style="background:#FFF;border:2px solid rgba(196,169,98,0.2);border-radius:12px;overflow:hidden;margin:16px 0;">' +
-                  '<div style="padding:16px 20px;background:rgba(196,169,98,0.08);border-bottom:1px solid rgba(196,169,98,0.15);">' +
-                    '<h2 style="font-family:\'Cormorant Garamond\',serif;font-weight:400;font-size:22px;margin:0;color:#1A1714;">' +
-                    sanitize(userName) + '</h2>' +
-                    '<p style="font-size:13px;color:#6B6459;margin:4px 0 0 0;">' + summaryDate + '</p>' +
-                  '</div>' +
-                  '<table style="width:100%;border-collapse:collapse;font-family:\'Jost\',sans-serif;font-size:15px;">' +
-                    '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">Status</td>' +
-                    '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;">' +
-                    statusDot + (isOnline ? '<span style="color:#22C55E;font-weight:500;">Online</span>' : '<span style="color:#EF4444;font-weight:500;">Offline</span>') +
-                    '</td></tr>' +
-                    '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">Last seen</td>' +
-                    '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;color:#6B6459;">' + lastSeenText + '</td></tr>' +
-                    '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">Calls today</td>' +
-                    '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;color:#6B6459;">' +
-                    callsToday.length + (missedToday > 0 ? ' <span style="color:#EF4444;">(' + missedToday + ' missed)</span>' : '') + '</td></tr>' +
-                    '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">Messages sent</td>' +
-                    '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;color:#6B6459;">' + messagesToday + '</td></tr>' +
-                    '<tr><td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);">Replies from device</td>' +
-                    '<td style="padding:12px 16px;border-bottom:1px solid rgba(196,169,98,0.15);text-align:right;color:#6B6459;">' + repliesToday + '</td></tr>' +
-                    medSection +
-                  '</table>' +
-                '</div>' +
-                '<a href="https://theken.uk/portal/" style="display:inline-block;background:#C4A962;color:#1A1714;text-decoration:none;padding:12px 28px;font-weight:500;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin:16px 0;">Open Portal</a>';
-
-              // Email all admin/carer users for this device (respecting preferences)
-              const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
-              for (const key of allUsers.keys) {
-                try {
-                  const u = await env.KEN_KV.get(key.name, 'json');
-                  if (!u || !u.devices || !u.devices[deviceId]) continue;
-                  const uRole = u.devices[deviceId].role;
-                  if (uRole !== 'admin' && uRole !== 'carer') continue;
-                  // Respect emailNotifications.dailySummary preference (default: true)
-                  if (u.emailNotifications && u.emailNotifications.dailySummary === false) continue;
-                  // Also respect notif-prefs timing=off as a global email opt-out
-                  const notifPrefs = await env.KEN_KV.get(`notif-prefs:${u.email}`, 'json');
-                  if (notifPrefs && notifPrefs.timing === 'off') continue;
-                  await sendEmail(env, u.email,
-                    'Daily Summary \u2014 The Ken',
-                    'Daily Summary',
-                    emailBody
-                  );
-                } catch {}
-              }
-            } catch {} // Continue to next device on error
-          }
-        }
-      }
-    } catch {} // Daily summary should never break the cron
+    // Daily summary email removed — dashboard is source of truth for daily activity
   },
 };
 
@@ -4663,7 +4558,7 @@ async function handleAddContact(request, env, deviceId) {
     await env.KEN_KV.put(`pending:${deviceId}`, JSON.stringify(existing));
     return json({ success: true, contact: { name: contact.name, id: contact.id } });
   } catch {
-    return json({ error: 'Invalid request' }, 400);
+    return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
   }
 }
 
@@ -4705,7 +4600,7 @@ async function handleSendMessage(request, env, deviceId) {
 
     return json({ success: true, message: { id: message.id } });
   } catch {
-    return json({ error: 'Invalid request' }, 400);
+    return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
   }
 }
 
@@ -4718,7 +4613,7 @@ function json(data, status = 200, corsHeaders = null) {
   };
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', ...cors },
+    headers: { 'Content-Type': 'application/json', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains', ...cors },
   });
 }
 
@@ -4851,6 +4746,7 @@ function feedbackViewerHTML(deviceId) {
             content +
             screenshotHtml +
             recentScreensHtml +
+            (f.page ? '<div style="font-size:12px;color:#8B5CF6;margin-top:4px;">Page: ' + esc(f.page) + '</div>' : '') +
             '<div class="item-time">' + esc(timeStr) + (f.id ? ' &middot; #' + esc(f.id.slice(0,8)) : '') + '</div>' +
             '</div>';
         }).join('');
@@ -6734,7 +6630,7 @@ async function hashPassword(password, salt) {
   if (!salt) salt = crypto.randomUUID();
   const encoder = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: encoder.encode(salt), iterations: 600000, hash: 'SHA-256' }, keyMaterial, 256);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: encoder.encode(salt), iterations: 100000, hash: 'SHA-256' }, keyMaterial, 256);
   const hash = btoa(String.fromCharCode(...new Uint8Array(bits)));
   return { hash, salt };
 }
@@ -6855,7 +6751,7 @@ async function generateTOTPCode(secret, timeStep) {
 async function verifyTOTP(secret, code) {
   // Check current window and ±2 windows (150 second tolerance for clock drift)
   const now = Date.now() / 1000;
-  for (const offset of [-60, -30, 0, 30, 60]) {
+  for (const offset of [-30, 0, 30]) {
     const expected = await generateTOTPCode(secret, now + offset);
     if (expected === code) return true;
   }

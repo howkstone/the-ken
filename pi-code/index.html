@@ -2373,40 +2373,15 @@
       50% { opacity: 1; transform: scale(1.1); }
     }
 
-    /* ===== PHOTO CAROUSEL SLIDESHOW ===== */
-    .slideshow-overlay {
+    /* ===== IDLE CLOCK OVERLAY ===== */
+    .idle-overlay {
       display: none;
       position: fixed;
       inset: 0;
       z-index: 5;
-      background: var(--warm-white);
+      background: var(--ink);
     }
-    .slideshow-overlay.active { display: block; }
-
-    .slideshow-image {
-      position: absolute;
-      inset: 0;
-      background-size: cover;
-      background-position: center;
-      background-repeat: no-repeat;
-      opacity: 0;
-      transition: opacity 1.5s ease;
-    }
-    .slideshow-image.visible { opacity: 1; }
-
-    .slideshow-caption {
-      position: absolute;
-      bottom: 100px;
-      left: 0;
-      right: 0;
-      text-align: center;
-      font-family: 'Jost', sans-serif;
-      font-weight: 500;
-      font-size: var(--body-lg);
-      color: var(--warm-white);
-      text-shadow: 0 2px 8px rgba(26, 23, 20, 0.6);
-      padding: 0 24px;
-    }
+    .idle-overlay.active { display: flex; flex-direction: column; align-items: center; justify-content: center; }
 
     /* ===== MEDICATION REMINDER NOTIFICATION ===== */
     .reminder-notification {
@@ -2650,17 +2625,10 @@
     </div>
   </div>
 
-  <!-- ===== PHOTO CAROUSEL SLIDESHOW ===== -->
-  <div class="slideshow-overlay" id="slideshowOverlay" onclick="toggleSlideshowPause(event)">
-    <div class="slideshow-image" id="slideshowImgA"></div>
-    <div class="slideshow-image" id="slideshowImgB"></div>
-    <div class="slideshow-caption" id="slideshowCaption"></div>
-    <div id="slideshowPauseIndicator" style="display:none;position:absolute;top:20px;right:20px;background:rgba(26,23,20,0.6);color:var(--cream);font-family:'Jost',sans-serif;font-weight:500;font-size:22px;padding:8px 20px;border-radius:12px;">Paused — tap to resume</div>
-    <!-- Idle clock display -->
-    <div id="idleClockDisplay" style="display:none;position:absolute;inset:0;background:var(--ink);flex-direction:column;align-items:center;justify-content:center;z-index:2;">
-      <div id="idleClockTime" style="font-family:'Cormorant Garamond',serif;font-weight:600;font-size:90px;color:var(--cream);line-height:1;"></div>
-      <div id="idleClockDate" style="font-family:'Jost',sans-serif;font-weight:500;font-size:36px;color:var(--gold);margin-top:16px;"></div>
-    </div>
+  <!-- ===== IDLE CLOCK OVERLAY ===== -->
+  <div class="idle-overlay" id="idleOverlay" onclick="dismissIdle()">
+    <div id="idleClockTime" style="font-family:'Cormorant Garamond',serif;font-weight:600;font-size:90px;color:var(--cream);line-height:1;"></div>
+    <div id="idleClockDate" style="font-family:'Jost',sans-serif;font-weight:500;font-size:36px;color:var(--gold);margin-top:16px;"></div>
   </div>
 
   <!-- ===== HOME SCREEN ===== -->
@@ -2676,7 +2644,7 @@
     <div id="missedCallBanner" style="display:none;background:rgba(196,169,98,0.15);border:3px solid var(--gold);border-radius:16px;padding:16px 20px;margin:0 20px 12px;">
       <div style="font-family:'Jost',sans-serif;font-weight:600;font-size:24px;color:var(--gold);text-align:center;" id="missedCallText">Sarah called at 2:15 PM</div>
       <div class="missed-call-buttons">
-        <button class="missed-call-btn callback" onclick="callBackMissed()">Call Back</button>
+        <button class="missed-call-btn callback" onclick="callBackMissed()">Video Call Back</button>
         <button class="missed-call-btn dismiss" onclick="dismissMissedCall()">Dismiss</button>
       </div>
     </div>
@@ -2686,8 +2654,8 @@
       <div class="phone-icon" style="width:100px;height:100px;margin-bottom:12px;">
         <img src="./photos/rotary-phone.png" alt="Phone" style="width:100%;height:100%;object-fit:contain;" />
       </div>
-      <div class="prompt" id="homePrompt">Who would you like to call?</div>
-      <div class="prompt-example" id="homeExample">Just say <em>"Ken, call my daughter"</em></div>
+      <div class="prompt" id="homePrompt">Who would you like to video call?</div>
+      <div class="prompt-example" id="homeExample">Just say <em>"Ken, video call my daughter"</em></div>
     </div>
     <div class="contacts-grid" id="contactsGrid">
       <div class="loading">Loading contacts...</div>
@@ -2699,7 +2667,7 @@
     <button class="nav-btn menu-trigger" id="menuTrigger" onclick="toggleMenu()" style="text-align:left;padding-left:28px;">
       MENU<span class="nav-badge" id="navMsgBadge"></span>
     </button>
-    <button class="nav-btn nightlight-btn" id="nightlightToggleBtn" onclick="toggleNightlightManual()" style="display:none;flex:0;width:64px;min-width:64px;font-size:20px;color:var(--gold);font-weight:500;border-left:1px solid rgba(196,169,98,0.2);">&#9790;</button>
+    <button class="nav-btn" id="nightlightToggleBtn" onclick="toggleNightlightManual()" style="flex:0;width:88px;min-width:88px;font-size:16px;color:var(--mid);font-weight:500;border-left:1px solid rgba(196,169,98,0.2);display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.1;"><span style="font-size:24px;">&#9790;</span><span style="font-size:11px;margin-top:2px;">NIGHT</span></button>
     <button class="nav-btn help-btn" onclick="navTo('help')" style="flex:0;width:64px;min-width:64px;font-size:var(--body-lg);color:var(--gold);font-weight:500;border-left:1px solid rgba(196,169,98,0.2);">?</button>
   </div>
   <div class="menu-expanded" id="menuExpanded">
@@ -2717,7 +2685,6 @@
     </button>
     <button class="menu-item" onclick="menuNavTo('callHistory')">Recent Calls</button>
     <button class="menu-item" onclick="menuNavTo('contacts')">Contacts</button>
-    <button class="menu-item" onclick="menuNavTo('photos')">Family Photos</button>
     <button class="menu-item" onclick="menuNavTo('medical')">Medical Info</button>
     <button class="menu-item" onclick="menuNavTo('feedback')">Give Feedback</button>
     <button class="menu-item" onclick="menuNavTo('settings')" style="color:var(--mid);font-weight:400;">Settings</button>
@@ -2734,6 +2701,22 @@
       <div style="font-family:'Jost',sans-serif;font-weight:400;font-size:var(--body);color:var(--mid);margin-bottom:8px;">Get in touch with us anytime</div>
     </div>
     <div class="settings-section">
+      <div class="settings-section-title">Screen Brightness</div>
+      <div class="settings-row" style="min-height:80px;flex-direction:column;align-items:stretch;gap:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <span style="font-size:var(--body);color:var(--ink);font-weight:500;">Brightness</span>
+          <span id="helpBrightnessValue" style="font-size:var(--body);color:var(--gold);font-weight:600;">100%</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <button onclick="adjustBrightness(-10)" style="width:56px;height:56px;border-radius:12px;border:2px solid var(--gold);background:var(--cream);font-size:24px;font-weight:600;color:var(--ink);cursor:pointer;">-</button>
+          <div style="flex:1;height:12px;background:var(--cream);border-radius:6px;border:1px solid rgba(196,169,98,0.3);overflow:hidden;">
+            <div id="helpBrightnessBar" style="height:100%;background:var(--gold);border-radius:6px;width:100%;transition:width 0.2s;"></div>
+          </div>
+          <button onclick="adjustBrightness(10)" style="width:56px;height:56px;border-radius:12px;border:2px solid var(--gold);background:var(--cream);font-size:24px;font-weight:600;color:var(--ink);cursor:pointer;">+</button>
+        </div>
+      </div>
+    </div>
+    <div class="settings-section">
       <div class="settings-section-title">Contact Us</div>
       <div class="settings-row" style="min-height:64px;">
         <div class="settings-label" style="font-size:var(--body-lg);">Call</div>
@@ -2741,7 +2724,7 @@
       </div>
       <div class="settings-row" style="min-height:64px;">
         <div class="settings-label" style="font-size:var(--body-lg);">Email</div>
-        <div class="settings-value" style="color:var(--gold);font-size:18px;font-weight:500;">howard@bigbraincompany.co.uk</div>
+        <div class="settings-value" style="color:var(--gold);font-size:var(--body-lg);font-weight:600;">howard@theken.uk</div>
       </div>
       <div class="settings-row" style="min-height:64px;">
         <div class="settings-label" style="font-size:var(--body-lg);">Website</div>
@@ -2756,7 +2739,7 @@
       <div class="settings-section-title">About This Device</div>
       <div class="settings-row">
         <div class="settings-label">Software Version</div>
-        <div class="settings-value">0.2.0</div>
+        <div class="settings-value">1.0.0</div>
       </div>
       <div class="settings-row">
         <div class="settings-label">Registered To</div>
@@ -2767,12 +2750,12 @@
         <div class="settings-value" id="helpDeviceId" style="font-size:14px;word-break:break-all;">—</div>
       </div>
       <div class="settings-row">
-        <div class="settings-label">IP Address</div>
-        <div class="settings-value" id="helpIpAddress">—</div>
-      </div>
-      <div class="settings-row">
         <div class="settings-label">WiFi Network</div>
         <div class="settings-value" id="helpWifiNetwork">—</div>
+      </div>
+      <div class="settings-row">
+        <div class="settings-label">IP Address</div>
+        <div class="settings-value" id="helpIpAddress">—</div>
       </div>
     </div>
     <div style="padding:16px 24px;">
@@ -3368,7 +3351,7 @@
       <div class="settings-section-title">About</div>
       <div class="settings-row">
         <div class="settings-label">Version</div>
-        <div class="settings-value">0.2.0</div>
+        <div class="settings-value">1.0.0</div>
       </div>
       <div class="settings-row">
         <div class="settings-label">Device</div>
@@ -3757,8 +3740,8 @@
         pwTitle: 'Set your passcode',
         pwSubtitle: 'Enter 4 digits',
         pwHint: 'Minimum 4 digits',
-        promptText: 'Who would you like to call?',
-        promptExample: 'Just say <em>"Ken, call my daughter"</em>',
+        promptText: 'Who would you like to video call?',
+        promptExample: 'Just say <em>"Ken, video call my daughter"</em>',
         next: 'Next',
         done: 'Done'
       },
@@ -3770,7 +3753,7 @@
         pcTitle: "Hoffech chi god mynediad 4 digid?", pcSubtitle: "Mae hyn yn atal mynediad heb awdurdod i'r gosodiadau",
         pcYes: "Ie, gosodwch god", pcYesDesc: "Argymhellir ar gyfer mannau a rennir", pcNo: "Na, hepgorwch hyn", pcNoDesc: "Gallwch ychwanegu un yn ddiweddarach",
         pwTitle: 'Gosodwch eich cod', pwSubtitle: 'Rhowch 4 digid', pwHint: 'O leiaf 4 digid',
-        promptText: 'Pwy hoffech chi ffonio?', promptExample: 'Dywedwch <em>"Ken, ffoniwch fy merch"</em>', next: 'Nesaf', done: 'Gorffen'
+        promptText: 'Pwy hoffech chi alw fideo?', promptExample: 'Dywedwch <em>"Ken, ffoniwch fy merch"</em>', next: 'Nesaf', done: 'Gorffen'
       },
       fr: {
         welcomeTitle: 'Bienvenue sur The Ken', chooseLang: 'Choisissez votre langue',
@@ -3780,7 +3763,7 @@
         pcTitle: 'Souhaitez-vous un code \u00e0 4 chiffres ?', pcSubtitle: "Cela emp\u00eache l'acc\u00e8s non autoris\u00e9 aux param\u00e8tres",
         pcYes: 'Oui, d\u00e9finir un code', pcYesDesc: 'Recommand\u00e9 pour les espaces partag\u00e9s', pcNo: 'Non, passer', pcNoDesc: 'Vous pourrez en ajouter un plus tard',
         pwTitle: 'D\u00e9finir votre code', pwSubtitle: 'Entrez 4 chiffres', pwHint: 'Minimum 4 chiffres',
-        promptText: 'Qui souhaitez-vous appeler ?', promptExample: 'Dites <em>"Ken, appelle ma fille"</em>', next: 'Suivant', done: 'Termin\u00e9'
+        promptText: 'Qui souhaitez-vous appeler en vidéo ?', promptExample: 'Dites <em>"Ken, appelle ma fille"</em>', next: 'Suivant', done: 'Termin\u00e9'
       },
       de: {
         welcomeTitle: 'Willkommen bei The Ken', chooseLang: 'W\u00e4hlen Sie Ihre Sprache',
@@ -3810,7 +3793,7 @@
         pcTitle: 'Vuoi un codice a 4 cifre?', pcSubtitle: "Questo impedisce l'accesso non autorizzato alle impostazioni",
         pcYes: 'S\u00ec, imposta codice', pcYesDesc: 'Consigliato per spazi condivisi', pcNo: 'No, salta', pcNoDesc: 'Puoi aggiungerne uno in seguito',
         pwTitle: 'Imposta il tuo codice', pwSubtitle: 'Inserisci 4 cifre', pwHint: 'Minimo 4 cifre',
-        promptText: 'Chi vuoi chiamare?', promptExample: 'Dì <em>"Ken, chiama mia figlia"</em>', next: 'Avanti', done: 'Fatto'
+        promptText: 'Chi vuoi videochiamire?', promptExample: 'Dì <em>"Ken, chiama mia figlia"</em>', next: 'Avanti', done: 'Fatto'
       },
       pl: {
         welcomeTitle: 'Witamy w The Ken', chooseLang: 'Wybierz j\u0119zyk',
@@ -4060,7 +4043,7 @@
     // Message notification: gentle two-note chime (ding-dong)
     function playMessageTone() {
       // Don't play if screen is idle/asleep
-      if (wasIdle || slideshowActive || nightlightActive) return;
+      if (wasIdle || idleActive || nightlightActive) return;
       // Don't play if a call is active
       const callingActive = document.getElementById('callingScreen').classList.contains('active');
       const callActive = document.getElementById('callScreen').classList.contains('active');
@@ -4215,7 +4198,7 @@
       document.getElementById('feedbackScreen').classList.toggle('active', id === 'feedback');
       document.getElementById('wifiChangeScreen').classList.toggle('active', id === 'wifiChange');
       // Dismiss slideshow when navigating
-      if (id !== 'home') dismissSlideshow();
+      if (id !== 'home') dismissIdle();
       // Show bottom nav on most screens
       const showNav = ['home', 'messages', 'contacts', 'settings', 'help', 'feedback', 'wifiChange', 'callHistory'].includes(id);
       document.getElementById('bottomNav').style.display = showNav ? 'flex' : 'none';
@@ -4245,9 +4228,9 @@
     // ===== VIDEO CALLING =====
     function confirmCallContact(contact) {
       showConfirmPopup(
-        'Call ' + contact.name + '?',
-        'Tap Call to start a video call.',
-        'Call',
+        'Video call ' + contact.name + '?',
+        'Tap below to start a video call.',
+        'Video Call',
         function() { callContact(contact); }
       );
     }
@@ -4398,7 +4381,10 @@
     function toggleMenu() {
       menuOpen = !menuOpen;
       document.getElementById('menuExpanded').classList.toggle('visible', menuOpen);
-      document.getElementById('menuTrigger').textContent = menuOpen ? 'CLOSE' : 'MENU';
+      var _trig = document.getElementById('menuTrigger');
+      var _badge = document.getElementById('navMsgBadge');
+      _trig.textContent = menuOpen ? 'CLOSE' : 'MENU';
+      if (_badge) _trig.appendChild(_badge);
       // Re-add badge if needed
       if (!menuOpen) {
         const badge = document.getElementById('navMsgBadge');
@@ -4410,18 +4396,15 @@
       if (menuOpen) {
         menuOpen = false;
         document.getElementById('menuExpanded').classList.remove('visible');
-        document.getElementById('menuTrigger').textContent = 'MENU';
-        const badge = document.getElementById('navMsgBadge');
-        document.getElementById('menuTrigger').appendChild(badge);
+        var trigger = document.getElementById('menuTrigger');
+        var badge = document.getElementById('navMsgBadge');
+        trigger.textContent = 'MENU';
+        if (badge) trigger.appendChild(badge);
       }
     }
 
     function menuNavTo(target) {
       closeMenu();
-      if (target === 'photos') {
-        startPhotoReel();
-        return;
-      }
       if (target === 'feedback') {
         selectedFeedbackCategory = null;
         document.querySelectorAll('.feedback-cat-btn').forEach(btn => {
@@ -4887,7 +4870,7 @@
 
     // ===== INCOMING CALL (AUTO-ANSWER) =====
     function simulateIncomingCall(callerName, callerPhoto, roomUrl) {
-      dismissSlideshow();
+      dismissIdle();
       const autoAnswerSecs = parseInt(localStorage.getItem('ken-auto-answer') || '15');
 
       // Store call data for answering
@@ -5789,7 +5772,7 @@
     let notifDismissTimer = null;
 
     function showMsgNotification(msg) {
-      dismissSlideshow();
+      dismissIdle();
       notifMessage = msg;
       document.getElementById('msgNotifFrom').textContent = msg.from;
       document.getElementById('msgNotifText').textContent = msg.text;
@@ -6216,8 +6199,8 @@
           }
           const contact = findContact(contactName);
           if (contact && contact.dailyRoomUrl) {
-            flashIndicator('Calling ' + contact.name + '...', 2500);
-            speak('Calling ' + contact.name);
+            flashIndicator('Video calling ' + contact.name + '...', 2500);
+            speak('Video calling ' + contact.name);
             setTimeout(() => callContact(contact), 500);
           } else {
             flashIndicator("I couldn't find that contact", 2500);
@@ -6367,17 +6350,12 @@
       setTimeout(startRecognition, 4000);
     })();
 
-    // ===== PHOTO CAROUSEL SLIDESHOW =====
-    let slideshowPhotos = [];
-    let slideshowIndex = 0;
-    let slideshowInterval = null;
-    let slideshowActive = false;
-    let idleTimer = null;
+    // ===== IDLE CLOCK =====
+    let idleActive = false;
+    let idleClockInterval = null;
     let lastInteractionTime = Date.now();
     const IDLE_TIMEOUT = 120000; // 2 minutes
-    const SLIDE_INTERVAL = 8000; // 8 seconds
 
-    // Track user interaction to reset idle timer
     let wasIdle = false;
     let nightGreetingShowing = false;
     function showNightGreeting() {
@@ -6410,14 +6388,12 @@
       const wasIdleBefore = wasIdle;
       wasIdle = false;
       lastInteractionTime = Date.now();
-      // Show greeting when tapping during nightlight mode
       if (nightlightActive && wasIdleBefore) {
         showNightGreeting();
       }
-      if (slideshowActive && !slideshowPaused) {
-        dismissSlideshow();
+      if (idleActive) {
+        dismissIdle();
       }
-      // When coming back from idle, check for voicemail notifications after 1 second
       if (wasIdleBefore) {
         setTimeout(checkVoicemailNotifications, 1000);
       }
@@ -6425,11 +6401,6 @@
 
     document.addEventListener('click', resetIdleTimer);
     document.addEventListener('touchstart', resetIdleTimer);
-
-    // Mark as idle when idle timeout fires — and start idle clock
-    let idleClockInterval = null;
-    let idleClockShowingClock = true; // track whether clock or photo is showing
-    let idleClockPhotoTimer = null;
 
     function updateIdleClock() {
       const now = new Date();
@@ -6447,88 +6418,7 @@
       document.getElementById('idleClockDate').textContent = days[now.getDay()] + ' ' + now.getDate() + ' ' + months[now.getMonth()];
     }
 
-    function showIdleClock() {
-      const clockEl = document.getElementById('idleClockDisplay');
-      clockEl.style.display = 'flex';
-      document.getElementById('slideshowImgA').classList.remove('visible');
-      document.getElementById('slideshowImgB').classList.remove('visible');
-      document.getElementById('slideshowCaption').textContent = '';
-      idleClockShowingClock = true;
-    }
-
-    function hideIdleClock() {
-      document.getElementById('idleClockDisplay').style.display = 'none';
-      idleClockShowingClock = false;
-    }
-
-    function startIdleClockMode() {
-      if (slideshowActive) return; // already running photo reel manually
-      if (!isIdleOnHomeScreen()) return;
-      if (nightlightActive) return;
-
-      slideshowActive = true;
-      const overlay = document.getElementById('slideshowOverlay');
-      overlay.classList.add('active');
-
-      updateIdleClock();
-      showIdleClock();
-
-      // Update clock every minute
-      idleClockInterval = setInterval(updateIdleClock, 60000);
-
-      if (slideshowPhotos.length > 0) {
-        // Alternate: clock 10s -> photo 8s -> clock 10s -> ...
-        slideshowIndex = 0;
-        scheduleIdleAlternation();
-      }
-    }
-
-    function scheduleIdleAlternation() {
-      if (!slideshowActive) return;
-      if (idleClockShowingClock) {
-        // Currently showing clock — after 10s show a photo
-        idleClockPhotoTimer = setTimeout(() => {
-          if (!slideshowActive || slideshowPhotos.length === 0) return;
-          hideIdleClock();
-          showSlide(slideshowIndex);
-          slideshowIndex = (slideshowIndex + 1) % slideshowPhotos.length;
-          scheduleIdleAlternation();
-        }, 10000);
-      } else {
-        // Currently showing photo — after 8s show clock
-        idleClockPhotoTimer = setTimeout(() => {
-          if (!slideshowActive) return;
-          showIdleClock();
-          scheduleIdleAlternation();
-        }, SLIDE_INTERVAL);
-      }
-    }
-
-    setInterval(() => {
-      if (Date.now() - lastInteractionTime > IDLE_TIMEOUT) {
-        wasIdle = true;
-        if (!slideshowActive && !nightlightActive) {
-          startIdleClockMode();
-        }
-      }
-    }, 5000);
-
-    async function fetchSlideshowPhotos() {
-      try {
-        const resp = await fetch('http://localhost:3000/api/photos');
-        const data = await resp.json();
-        slideshowPhotos = data.photos || [];
-      } catch {
-        slideshowPhotos = [];
-      }
-    }
-
-    // Fetch photos every 60 seconds
-    fetchSlideshowPhotos();
-    setInterval(fetchSlideshowPhotos, 60000);
-
     function isIdleOnHomeScreen() {
-      // Check we are on home screen and no overlays are active
       const homeVisible = document.getElementById('homeScreen').style.display === 'flex';
       const callingActive = document.getElementById('callingScreen').classList.contains('active');
       const callActive = document.getElementById('callScreen').classList.contains('active');
@@ -6538,88 +6428,31 @@
       return homeVisible && !callingActive && !callActive && !incomingActive && !msgNotifActive && !reminderActive;
     }
 
-    function startSlideshow() {
-      if (slideshowPhotos.length === 0 || slideshowActive) return;
-      slideshowActive = true;
-      slideshowIndex = 0;
-      const overlay = document.getElementById('slideshowOverlay');
-      overlay.classList.add('active');
-
-      // Show first photo
-      showSlide(slideshowIndex);
-
-      // Cycle every 8 seconds
-      slideshowInterval = setInterval(() => {
-        slideshowIndex = (slideshowIndex + 1) % slideshowPhotos.length;
-        showSlide(slideshowIndex);
-      }, SLIDE_INTERVAL);
+    function startIdleClock() {
+      if (idleActive) return;
+      if (!isIdleOnHomeScreen()) return;
+      if (nightlightActive) return;
+      idleActive = true;
+      updateIdleClock();
+      document.getElementById('idleOverlay').classList.add('active');
+      idleClockInterval = setInterval(updateIdleClock, 60000);
     }
 
-    let currentSlideEl = 'A'; // Toggle between A and B for crossfade
-    function showSlide(index) {
-      if (index >= slideshowPhotos.length) return;
-      const photo = slideshowPhotos[index];
-      const nextEl = currentSlideEl === 'A' ? 'B' : 'A';
-      const showDiv = document.getElementById('slideshowImg' + nextEl);
-      const hideDiv = document.getElementById('slideshowImg' + currentSlideEl);
-
-      showDiv.style.backgroundImage = 'url(http://localhost:3000' + photo.url + ')';
-      showDiv.classList.add('visible');
-      hideDiv.classList.remove('visible');
-      currentSlideEl = nextEl;
-
-      // Update caption
-      const caption = document.getElementById('slideshowCaption');
-      caption.textContent = photo.caption || '';
-    }
-
-    let slideshowPaused = false;
-
-    function toggleSlideshowPause(event) {
-      if (!slideshowActive) return;
-      event.stopPropagation(); // Don't trigger resetIdleTimer → dismissSlideshow
-      lastInteractionTime = Date.now(); // Keep idle timer fresh
-      if (slideshowPaused) {
-        // Resume
-        slideshowPaused = false;
-        document.getElementById('slideshowPauseIndicator').style.display = 'none';
-        slideshowInterval = setInterval(() => {
-          slideshowIndex = (slideshowIndex + 1) % slideshowPhotos.length;
-          showSlide(slideshowIndex);
-        }, SLIDE_INTERVAL);
-      } else {
-        // Pause
-        slideshowPaused = true;
-        if (slideshowInterval) { clearInterval(slideshowInterval); slideshowInterval = null; }
-        document.getElementById('slideshowPauseIndicator').style.display = 'block';
-      }
-    }
-
-    function dismissSlideshow() {
-      if (!slideshowActive) return;
-      slideshowActive = false;
-      slideshowPaused = false;
-      if (slideshowInterval) { clearInterval(slideshowInterval); slideshowInterval = null; }
+    function dismissIdle() {
+      if (!idleActive) return;
+      idleActive = false;
       if (idleClockInterval) { clearInterval(idleClockInterval); idleClockInterval = null; }
-      if (idleClockPhotoTimer) { clearTimeout(idleClockPhotoTimer); idleClockPhotoTimer = null; }
-      document.getElementById('slideshowOverlay').classList.remove('active');
-      document.getElementById('slideshowImgA').classList.remove('visible');
-      document.getElementById('slideshowImgB').classList.remove('visible');
-      document.getElementById('slideshowPauseIndicator').style.display = 'none';
-      document.getElementById('idleClockDisplay').style.display = 'none';
+      document.getElementById('idleOverlay').classList.remove('active');
     }
 
-    // Photo reel is manual only — no idle auto-trigger (dementia users need to always see the phone)
-    function startPhotoReel() {
-      if (slideshowPhotos.length === 0) {
-        // Speak feedback
-        const utt = new SpeechSynthesisUtterance('No photos have been added yet.');
-        utt.lang = 'en-GB'; utt.rate = 0.9;
-        window.speechSynthesis.speak(utt);
-        return;
+    setInterval(() => {
+      if (Date.now() - lastInteractionTime > IDLE_TIMEOUT) {
+        wasIdle = true;
+        if (!idleActive && !nightlightActive) {
+          startIdleClock();
+        }
       }
-      startSlideshow();
-    }
+    }, 5000);
 
     // ===== MEDICATION REMINDERS =====
     let cachedReminders = [];
@@ -6678,7 +6511,7 @@
     const MAX_SNOOZES = 3;
 
     function showReminderNotification(reminder) {
-      dismissSlideshow();
+      dismissIdle();
       activeReminder = reminder;
       reminderSnoozeCount = 0;
 
@@ -7430,8 +7263,8 @@
     setTimeout(checkVoicemailNotifications, 5000);
 
     // Poll for voicemails every 10 seconds
-    setInterval(pollVoicemails, 10000);
-    pollVoicemails();
+    setInterval(checkVoicemailNotifications, 10000);
+    checkVoicemailNotifications();
 
     // ===== MEDICAL INFO =====
     let medicalData = null;
@@ -7692,8 +7525,35 @@
       btnText.textContent = 'Speak';
     }
 
+    // ===== BRIGHTNESS =====
+    let currentBrightness = parseInt(localStorage.getItem('ken-brightness') || '100');
+    function adjustBrightness(delta) {
+      currentBrightness = Math.max(20, Math.min(100, currentBrightness + delta));
+      localStorage.setItem('ken-brightness', currentBrightness.toString());
+      applyBrightness();
+    }
+    function applyBrightness() {
+      document.body.style.filter = currentBrightness < 100 ? 'brightness(' + (currentBrightness / 100) + ')' : '';
+      var valEl = document.getElementById('helpBrightnessValue');
+      if (valEl) valEl.textContent = currentBrightness + '%';
+      var barEl = document.getElementById('helpBrightnessBar');
+      if (barEl) barEl.style.width = currentBrightness + '%';
+      // Also send to Pi hardware if available
+      fetch('http://localhost:3000/api/brightness', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brightness: currentBrightness })
+      }).catch(function() {});
+    }
+    applyBrightness();
+
     // Boot
-    init();
+    try { init(); } catch(e) { console.error('INIT FAILED:', e); }
+    // Always ensure home screen shows if setup is done
+    if (localStorage.getItem('ken-setup-done')) {
+      document.getElementById('homeScreen').style.display = 'flex';
+      document.getElementById('bottomNav').style.display = 'flex';
+    }
   </script>
 </body>
 </html>

@@ -123,10 +123,7 @@ const CALLS_FILE = path.join(__dirname, 'calls.json');
 const CALL_HISTORY_FILE = path.join(__dirname, 'call-history.json');
 const REMINDERS_FILE = path.join(__dirname, 'reminders.json');
 const VOICEMAILS_FILE = path.join(__dirname, 'voicemails.json');
-const PHOTOS_CAROUSEL_DIR = path.join(__dirname, 'photos-carousel');
 const SETTINGS_FILE = path.join(__dirname, 'settings.json');
-
-if (!fs.existsSync(PHOTOS_CAROUSEL_DIR)) fs.mkdirSync(PHOTOS_CAROUSEL_DIR);
 
 function readSettings() {
   try { return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); }
@@ -500,46 +497,6 @@ function writeVoicemails(data) {
   fs.writeFileSync(VOICEMAILS_FILE, JSON.stringify(data, null, 2));
 }
 
-async function pollForPhotos() {
-  try {
-    const resp = await cloudFetch(`${CLOUD_API}/api/photos/${DEVICE_ID}`);
-    const data = await resp.json();
-    const photos = data.photos || [];
-
-    // Read existing cached photo IDs
-    const existingFiles = fs.readdirSync(PHOTOS_CAROUSEL_DIR);
-    const existingIds = new Set(existingFiles.map(f => f.replace(/\.\w+$/, '')));
-
-    // Remove photos that are no longer in cloud
-    const cloudIds = new Set(photos.map(p => p.id));
-    for (const file of existingFiles) {
-      const fileId = file.replace(/\.\w+$/, '');
-      if (!cloudIds.has(fileId)) {
-        try { fs.unlinkSync(path.join(PHOTOS_CAROUSEL_DIR, file)); } catch {}
-      }
-    }
-
-    // Download new photos
-    for (const photo of photos) {
-      if (!existingIds.has(photo.id) && photo.photo) {
-        const base64Data = photo.photo.replace(/^data:image\/\w+;base64,/, '');
-        const ext = photo.photo.startsWith('data:image/png') ? 'png' : 'jpg';
-        fs.writeFileSync(path.join(PHOTOS_CAROUSEL_DIR, photo.id + '.' + ext), base64Data, 'base64');
-      }
-    }
-
-    // Write metadata
-    const meta = photos.map(p => ({
-      id: p.id,
-      caption: p.caption || '',
-      uploadedAt: p.uploadedAt
-    }));
-    fs.writeFileSync(path.join(PHOTOS_CAROUSEL_DIR, '_meta.json'), JSON.stringify(meta, null, 2));
-  } catch (err) {
-    // Silent fail
-  }
-}
-
 async function pollForReminders() {
   try {
     const resp = await cloudFetch(`${CLOUD_API}/api/reminders/${DEVICE_ID}`);
@@ -721,7 +678,6 @@ setInterval(pollForContacts, POLL_INTERVAL);        // 60s
 setInterval(pollForMessages, POLL_INTERVAL);        // 60s
 setInterval(pollForCalls, CALL_POLL_INTERVAL);      // 10s
 setInterval(sendHeartbeat, 300000);                 // 5 min (was 60s)
-setInterval(pollForPhotos, 300000);                 // 5 min (was 60s)
 setInterval(pollForReminders, 300000);              // 5 min (was 60s)
 setInterval(pollForVoicemails, 120000);             // 2 min (was 30s)
 setInterval(pollForSettings, 120000);               // 2 min (was 30s)
@@ -730,7 +686,6 @@ setInterval(pollForOfflineAlertSettings, 300000);   // 5 min (was 60s)
 setInterval(pollScreenViewStatus, 10000);           // 10s — check for HQ screen view requests
 pollForContacts();
 pollForMessages();
-pollForPhotos();
 pollForReminders();
 pollForVoicemails();
 pollForSettings();
@@ -1179,53 +1134,6 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: 'Failed to add contact' }));
       }
     }).catch(() => { res.writeHead(413); res.end('Body too large'); });
-    return;
-  }
-
-  // Return cached carousel photos
-  if (req.method === 'GET' && req.url === '/api/photos') {
-    try {
-      const metaPath = path.join(PHOTOS_CAROUSEL_DIR, '_meta.json');
-      const meta = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8')) : [];
-      const photos = [];
-      for (const item of meta) {
-        // Find the file for this photo
-        const files = fs.readdirSync(PHOTOS_CAROUSEL_DIR).filter(f => f.startsWith(item.id) && !f.endsWith('.json'));
-        if (files.length > 0) {
-          photos.push({
-            id: item.id,
-            caption: item.caption || '',
-            url: '/api/photos/file/' + files[0]
-          });
-        }
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ photos }));
-    } catch {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ photos: [] }));
-    }
-    return;
-  }
-
-  // Serve a carousel photo file
-  if (req.method === 'GET' && req.url.startsWith('/api/photos/file/')) {
-    const fileName = req.url.split('/').pop();
-    const filePath = path.resolve(PHOTOS_CAROUSEL_DIR, fileName);
-    if (!filePath.startsWith(path.resolve(PHOTOS_CAROUSEL_DIR))) {
-      res.writeHead(403);
-      res.end('Forbidden');
-      return;
-    }
-    if (fs.existsSync(filePath)) {
-      const ext = path.extname(fileName).toLowerCase();
-      const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
-      res.writeHead(200, { 'Content-Type': mime });
-      res.end(fs.readFileSync(filePath));
-    } else {
-      res.writeHead(404);
-      res.end('Not found');
-    }
     return;
   }
 
