@@ -17,5 +17,11 @@ id = "ccf0daf934334ef087b46231014bb815"
 binding = "KEN_MEDIA"
 bucket_name = "ken-media"
 
+# D1 database (migrating from KV)
+[[d1_databases]]
+binding = "KEN_DB"
+database_name = "ken-db"
+database_id = "3a7dde42-a642-4f9b-a3d7-79a3a27d0dd1"
+
 [triggers]
 crons = ["*/2 * * * *"]
