@@ -1633,8 +1633,7 @@ export default {
       const deviceId = path.split('/')[3];
       try {
         const body = await request.json();
-        await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(body.contacts || []));
-        try { await d1SaveContacts(env, deviceId, body.contacts || []); } catch {}
+        await d1SaveContacts(env, deviceId, body.contacts || []);
         const session = await getSession(request, env);
         await logAudit(env, deviceId, session ? session.email : 'device', 'Synced contacts', { count: (body.contacts || []).length });
         return json({ success: true });
@@ -1667,8 +1666,7 @@ export default {
         if (relationship !== undefined) contact.relationship = relationship;
         if (phoneNumber !== undefined) contact.phoneNumber = phoneNumber;
         if (body.birthday !== undefined) contact.birthday = body.birthday; // YYYY-MM-DD format
-        await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
-        try { await d1SaveContacts(env, deviceId, contacts); } catch {}
+        await d1SaveContacts(env, deviceId, contacts);
         return json({ success: true });
       } catch {
         return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
@@ -1691,8 +1689,7 @@ export default {
         if (filtered.length === contacts.length) return json({ error: 'Contact not found' }, 404);
         // Re-number positions
         filtered.forEach((c, i) => c.position = i + 1);
-        await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(filtered));
-        try { await d1SaveContacts(env, deviceId, filtered); } catch {}
+        await d1SaveContacts(env, deviceId, filtered);
         return json({ success: true });
       } catch {
         return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
@@ -1714,8 +1711,7 @@ export default {
         const contact = contacts.find(c => c.id === id);
         if (!contact) return json({ error: 'Contact not found' }, 404);
         contact.isEmergencyContact = !!isEmergencyContact;
-        await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
-        try { await d1SaveContacts(env, deviceId, contacts); } catch {}
+        await d1SaveContacts(env, deviceId, contacts);
         const session = await getSession(request, env);
         await logAudit(env, deviceId, session ? session.email : 'unknown', isEmergencyContact ? 'Marked emergency contact' : 'Unmarked emergency contact', { contactName: contact.name });
         return json({ success: true });
@@ -1739,8 +1735,7 @@ export default {
         const contact = contacts.find(c => c.id === id);
         if (!contact) return json({ error: 'Contact not found' }, 404);
         contact.hasPOA = !!hasPOA;
-        await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
-        try { await d1SaveContacts(env, deviceId, contacts); } catch {}
+        await d1SaveContacts(env, deviceId, contacts);
         await logAudit(env, deviceId, auth.user.email, hasPOA ? 'Set POA on contact' : 'Removed POA from contact', { contactName: contact.name });
         return json({ success: true });
       } catch {
@@ -1878,8 +1873,7 @@ export default {
         existing.updatedAt = new Date().toISOString();
         existing.updatedBy = auth.user.email;
         const encrypted = await encryptObject(env, existing, SENSITIVE_FIELDS);
-        await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(encrypted));
-        try { await d1SaveMedical(env, deviceId, encrypted); } catch {}
+        await d1SaveMedical(env, deviceId, encrypted);
         await logAudit(env, deviceId, auth.user.email, 'Updated medical info', { fields: Object.keys(body).filter(k => body[k] !== undefined) });
         return json({ success: true });
       } catch {
@@ -1913,8 +1907,7 @@ export default {
         existing.careNotesUpdatedAt = new Date().toISOString();
         existing.careNotesUpdatedBy = auth.user.email;
         const encMedical = await encryptObject(env, existing, SENSITIVE_FIELDS);
-        await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(encMedical));
-        try { await d1SaveMedical(env, deviceId, encMedical); } catch {}
+        await d1SaveMedical(env, deviceId, encMedical);
         await logAudit(env, deviceId, auth.user.email, 'Added care note', { preview: newNote.slice(0, 50) });
         return json({ success: true });
       } catch {
@@ -2392,8 +2385,7 @@ export default {
           createdAt: new Date().toISOString(),
         };
         reminders.push(reminder);
-        await env.KEN_KV.put(`reminders:${deviceId}`, JSON.stringify(reminders));
-        try { await d1SaveReminders(env, deviceId, reminders); } catch {}
+        await d1SaveReminders(env, deviceId, reminders);
         await logAudit(env, deviceId, auth.user.email, 'Added reminder', { label: reminder.label, time: reminder.time });
         return json({ success: true, reminder });
       } catch {
@@ -2417,8 +2409,7 @@ export default {
       if (!hasPermission(role, 'edit:reminders')) return json({ error: 'Admin or carer access required' }, 403);
       const reminders = await getReminders(env, deviceId);
       const filtered = reminders.filter(r => r.id !== reminderId);
-      await env.KEN_KV.put(`reminders:${deviceId}`, JSON.stringify(filtered));
-      try { await d1SaveReminders(env, deviceId, filtered); } catch {}
+      await d1SaveReminders(env, deviceId, filtered);
       await logAudit(env, deviceId, auth.user.email, 'Deleted reminder', { reminderId });
       return json({ success: true });
     }
@@ -2557,12 +2548,6 @@ export default {
     // Separate endpoint for queue/alert processing (Pi calls this less frequently)
     if (request.method === 'POST' && path.match(/^\/api\/heartbeat\/[\w-]+\/sync$/)) {
       const deviceId = path.split('/')[3];
-      // Clear offline alerts
-      const alertSettings = await env.KEN_KV.get(`offline-alerts:${deviceId}`, 'json');
-      if (alertSettings && alertSettings.lastAlertSent) {
-        alertSettings.lastAlertSent = null;
-        await env.KEN_KV.put(`offline-alerts:${deviceId}`, JSON.stringify(alertSettings));
-      }
       // Process settings queue
       const queue = await env.KEN_KV.get(`queue:${deviceId}`, 'json') || [];
       if (queue.length > 0) {
@@ -2570,8 +2555,7 @@ export default {
           if (item.setting && item.value !== undefined) {
             const settings = await getSettings(env, deviceId);
             settings[item.setting] = item.value;
-            await env.KEN_KV.put(`settings:${deviceId}`, JSON.stringify(settings));
-            try { await d1SaveSettings(env, deviceId, settings); } catch {}
+            await d1SaveSettings(env, deviceId, settings);
           }
         }
         await env.KEN_KV.delete(`queue:${deviceId}`);
@@ -2600,7 +2584,7 @@ export default {
           contactNames: body.contactNames || [],
           lastAlertSent: body.lastAlertSent || null
         };
-        await env.KEN_KV.put(`offline-alerts:${deviceId}`, JSON.stringify(settings));
+        // TODO: D1 write for offline-alerts (table needed)
         const session = await getSession(request, env);
         await logAudit(env, deviceId, session ? session.email : 'device', 'Updated offline alert settings', settings);
         return json({ success: true });
@@ -2639,7 +2623,7 @@ export default {
         return json({ offline: true, offlineMinutes, shouldAlert: false, reason: 'alert already sent' });
       }
       alertSettings.lastAlertSent = new Date().toISOString();
-      await env.KEN_KV.put(`offline-alerts:${deviceId}`, JSON.stringify(alertSettings));
+      // TODO: D1 write for offline-alerts (table needed)
       return json({ offline: true, offlineMinutes, shouldAlert: true, contacts: alertSettings.contactNames });
     }
 
@@ -2690,8 +2674,7 @@ export default {
       const deviceId = path.split('/')[3];
       try {
         const body = await request.json();
-        await env.KEN_KV.put(`callhistory:${deviceId}`, JSON.stringify(body));
-        try { await d1SaveCallHistory(env, deviceId, body); } catch {}
+        await d1SaveCallHistory(env, deviceId, body);
         return json({ success: true });
       } catch {
         return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
@@ -2718,8 +2701,7 @@ export default {
       }
       try {
         const body = await request.json();
-        await env.KEN_KV.put(`settings:${deviceId}`, JSON.stringify(body));
-        try { await d1SaveSettings(env, deviceId, body); } catch {}
+        await d1SaveSettings(env, deviceId, body);
         const session = await getSession(request, env);
         await logAudit(env, deviceId, session ? session.email : 'device', 'Updated device settings', body);
         return json({ success: true });
@@ -2773,8 +2755,7 @@ export default {
         const feedback = await getFeedback(env, deviceId);
         feedback.push(body);
         if (feedback.length > 100) feedback.splice(0, feedback.length - 100);
-        await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
-        try { await d1SaveFeedback(env, deviceId, feedback); } catch {}
+        await d1SaveFeedback(env, deviceId, feedback);
         await logAudit(env, deviceId, session ? session.email : (body.from || 'device'), 'Submitted feedback', { type: body.type || 'text' });
         return json({ success: true, ticketId: body.id });
       } catch {
@@ -2830,8 +2811,7 @@ export default {
         };
         if (!ticket.replies) ticket.replies = [];
         ticket.replies.push(reply);
-        await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
-        try { await d1SaveFeedback(env, deviceId, feedback); } catch {}
+        await d1SaveFeedback(env, deviceId, feedback);
         await logAudit(env, deviceId, auth.user.email, 'Replied to feedback ticket', { ticketId });
         return json({ success: true, reply });
       } catch {
@@ -2858,8 +2838,7 @@ export default {
           return json({ error: 'Invalid status. Must be: ' + validStatuses.join(', ') }, 400);
         }
         ticket.status = body.status;
-        await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
-        try { await d1SaveFeedback(env, deviceId, feedback); } catch {}
+        await d1SaveFeedback(env, deviceId, feedback);
         await logAudit(env, deviceId, auth.user.email, 'Updated feedback ticket status', { ticketId, status: body.status });
         return json({ success: true, status: ticket.status });
       } catch {
@@ -2975,8 +2954,7 @@ export default {
             await env.KEN_MEDIA.delete(removed.r2Key);
           }
         }
-        await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
-        try { await d1SaveVoicemails(env, deviceId, voicemails); } catch {}
+        await d1SaveVoicemails(env, deviceId, voicemails);
         // Clear the voicemail request signal
         await env.KEN_KV.delete(`voicemail-req:${deviceId}`);
         return json({ success: true });
@@ -3016,8 +2994,7 @@ export default {
         await env.KEN_MEDIA.delete(toDelete.r2Key);
       }
       const filtered = voicemails.filter(v => v.id !== vmId);
-      await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(filtered));
-      try { await d1SaveVoicemails(env, deviceId, filtered); } catch {}
+      await d1SaveVoicemails(env, deviceId, filtered);
       await logAudit(env, deviceId, auth.user.email, 'Deleted voicemail', { vmId });
       return json({ success: true });
     }
@@ -3032,8 +3009,7 @@ export default {
       if (vm) {
         vm.delivered = true;
         vm.deliveredAt = new Date().toISOString();
-        await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
-        try { await d1SaveVoicemails(env, deviceId, voicemails); } catch {}
+        await d1SaveVoicemails(env, deviceId, voicemails);
       }
       return json({ success: true });
     }
@@ -3048,8 +3024,7 @@ export default {
       if (vm) {
         vm.played = true;
         vm.playedAt = new Date().toISOString();
-        await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
-        try { await d1SaveVoicemails(env, deviceId, voicemails); } catch {}
+        await d1SaveVoicemails(env, deviceId, voicemails);
       }
       return json({ success: true });
     }
@@ -3121,7 +3096,7 @@ export default {
           missedCalls: body.missedCalls !== false,
           medicationAlerts: body.medicationAlerts !== false,
         };
-        await env.KEN_KV.put(`notif-prefs:${auth.user.email}`, JSON.stringify(prefs));
+        // TODO: D1 write for notif-prefs (table needed)
         return json({ success: true });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
@@ -3187,8 +3162,7 @@ export default {
           const medAlerts = await getMedAlerts(env, deviceId);
           medAlerts.push({ id: crypto.randomUUID(), reminderId, label, action, timestamp: new Date().toISOString(), resolved: false });
           if (medAlerts.length > 50) medAlerts.splice(0, medAlerts.length - 50);
-          await env.KEN_KV.put(`med-alerts:${deviceId}`, JSON.stringify(medAlerts));
-          // TODO: D1 dual-write for med-alerts
+          // TODO: D1 write for med-alerts (table needed)
           // Email carers/admins
           const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
           const userName = deviceInfo.userName || 'The Ken user';
@@ -3237,8 +3211,7 @@ export default {
         alert.resolved = true;
         alert.resolvedBy = auth.user.email;
         alert.resolvedAt = new Date().toISOString();
-        await env.KEN_KV.put(`med-alerts:${deviceId}`, JSON.stringify(alerts));
-        // TODO: D1 dual-write for med-alerts
+        // TODO: D1 write for med-alerts (table needed)
       }
       return json({ success: true });
     }
@@ -3257,7 +3230,7 @@ export default {
           notifyTime: body.notifyTime || '09:00', // HH:MM when to send reminder
           daysBefore: body.daysBefore || [0, 1, 7], // days before birthday to notify (0 = on the day)
         };
-        await env.KEN_KV.put(`birthday-prefs:${deviceId}`, JSON.stringify(prefs));
+        // TODO: D1 write for birthday-prefs (table needed)
         await logAudit(env, deviceId, auth.user.email, 'Updated birthday reminder settings', prefs);
         return json({ success: true });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
@@ -3294,8 +3267,7 @@ export default {
           group.members.unshift({ userId: auth.user.email, name: auth.user.name, role: 'admin' });
         }
         groups.push(group);
-        await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(groups));
-        try { await d1SaveGroups(env, deviceId, groups); } catch {}
+        await d1SaveGroups(env, deviceId, groups);
         await logAudit(env, deviceId, auth.user.email, 'Created group', { groupName: group.name, memberCount: group.members.length });
         return json({ success: true, group });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
@@ -3340,8 +3312,7 @@ export default {
           group.members = body.members.map(m => ({ userId: m.userId || m.email, name: sanitize(m.name || ''), role: m.role === 'admin' ? 'admin' : 'member' }));
         }
         group.updatedAt = new Date().toISOString();
-        await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(groups));
-        try { await d1SaveGroups(env, deviceId, groups); } catch {}
+        await d1SaveGroups(env, deviceId, groups);
         await logAudit(env, deviceId, auth.user.email, 'Updated group', { groupId, groupName: group.name });
         return json({ success: true, group });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
@@ -3363,8 +3334,7 @@ export default {
         return json({ error: 'Group admin or device admin access required' }, 403);
       }
       const filtered = groups.filter(g => g.id !== groupId);
-      await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(filtered));
-      try { await d1SaveGroups(env, deviceId, filtered); } catch {}
+      await d1SaveGroups(env, deviceId, filtered);
       await logAudit(env, deviceId, auth.user.email, 'Deleted group', { groupId, groupName: group.name });
       return json({ success: true });
     }
@@ -4426,7 +4396,7 @@ export default {
             { role: 'hq', delayMinutes: 45, method: 'email' }
           ]
         };
-        await env.KEN_KV.put(`escalation-config:${deviceId}`, JSON.stringify(config));
+        // TODO: D1 write for escalation-config (table needed)
         await logAudit(env, deviceId, auth.user.email, 'Updated escalation config', config);
         return json({ success: true });
       } catch {
@@ -4550,7 +4520,7 @@ export default {
 
         // Mark alert as sent
         alertSettings.lastAlertSent = new Date().toISOString();
-        await env.KEN_KV.put(`offline-alerts:${deviceId}`, JSON.stringify(alertSettings));
+        // TODO: D1 write for offline-alerts (table needed)
       } catch {
         // Continue to next device on error
       }
@@ -4751,8 +4721,8 @@ export default {
 
         // Persist emailNotificationSent flags
         if (history.length > 0) await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
-        if (voicemails.length > 0) { await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails)); try { await d1SaveVoicemails(env, deviceId, voicemails); } catch {} }
-        if (calls.length > 0) { await env.KEN_KV.put(`callhistory:${deviceId}`, JSON.stringify({ calls })); try { await d1SaveCallHistory(env, deviceId, { calls }); } catch {} }
+        if (voicemails.length > 0) { try { await d1SaveVoicemails(env, deviceId, voicemails); } catch {} }
+        if (calls.length > 0) { try { await d1SaveCallHistory(env, deviceId, { calls }); } catch {} }
       } catch {}
     }
 
@@ -7174,31 +7144,5 @@ function calculateNextDue(frequency, preferredTime) {
 }
 
 async function logAudit(env, deviceId, email, action, details) {
-  try {
-    const audit = await env.KEN_KV.get(`audit:${deviceId}`, 'json') || [];
-    audit.push({
-      id: crypto.randomUUID(),
-      userId: email,
-      action,
-      timestamp: new Date().toISOString(),
-      details: details || {}
-    });
-    // Archive when hitting 500: move oldest 250 to archive chunk, keep up to 5 archives
-    if (audit.length > 500) {
-      const toArchive = audit.splice(0, 250);
-      const archiveKey = `audit-archive:${deviceId}:${new Date().toISOString()}`;
-      await env.KEN_KV.put(archiveKey, JSON.stringify(toArchive));
-      // List and prune old archives (keep max 5)
-      const archiveList = await env.KEN_KV.list({ prefix: `audit-archive:${deviceId}:` });
-      if (archiveList.keys.length > 5) {
-        const toDelete = archiveList.keys.sort((a, b) => a.name.localeCompare(b.name)).slice(0, archiveList.keys.length - 5);
-        for (const k of toDelete) await env.KEN_KV.delete(k.name);
-      }
-    }
-    await env.KEN_KV.put(`audit:${deviceId}`, JSON.stringify(audit));
-    // Dual-write to D1
-    try { await d1AddAudit(env, deviceId, email, action, details); } catch {}
-  } catch {
-    // Audit logging should never break the main flow
-  }
+  try { await d1AddAudit(env, deviceId, email, action, details); } catch {}
 }
