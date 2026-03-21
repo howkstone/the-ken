@@ -541,37 +541,29 @@
       -webkit-overflow-scrolling: touch;
     }
 
-    /* Scroll buttons for all scrollable areas */
-    .scroll-controls {
-      position: fixed;
-      right: 8px;
-      top: 50%;
-      transform: translateY(-50%);
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      z-index: 50;
-    }
-    .scroll-btn {
-      width: 52px;
-      height: 64px;
-      background: rgba(196, 169, 98, 0.9);
-      color: #FDFAF5;
-      border: none;
-      border-radius: 12px;
-      font-size: 28px;
-      font-weight: 700;
+    /* Large scroll buttons — full width, easy to tap with tremors */
+    .scroll-btn-large {
+      width: 100%;
+      height: 72px;
+      background: rgba(196, 169, 98, 0.15);
+      border: 3px solid rgba(196, 169, 98, 0.4);
+      border-radius: 16px;
+      color: var(--gold);
+      font-family: 'Jost', sans-serif;
+      font-size: 22px;
+      font-weight: 600;
       cursor: pointer;
-      display: flex;
+      display: none;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 2px 8px rgba(26, 23, 20, 0.2);
+      gap: 12px;
+      margin: 8px 0;
       user-select: none;
       -webkit-tap-highlight-color: transparent;
     }
-    .scroll-btn:active {
-      background: var(--gold-light);
-      transform: scale(0.95);
+    .scroll-btn-large:active {
+      background: rgba(196, 169, 98, 0.3);
+      border-color: var(--gold);
     }
 
     .top-bar {
@@ -638,7 +630,7 @@
       display: grid;
       grid-template-columns: repeat(2, 1fr);
       gap: 16px;
-      flex: 1;
+      flex: 0 0 auto;
       align-content: start;
     }
 
@@ -2692,15 +2684,11 @@
       <div class="prompt" id="homePrompt">Who would you like to video call?</div>
       <div class="prompt-example" id="homeExample">Just say <em>"Ken, video call my daughter"</em></div>
     </div>
+    <button class="scroll-btn-large" id="scrollUpBtn" onclick="prevContactPage()">&#9650; Previous</button>
     <div class="contacts-grid" id="contactsGrid">
       <div class="loading">Loading contacts...</div>
     </div>
-  </div>
-
-  <!-- Scroll buttons (visible when home screen has overflow) -->
-  <div class="scroll-controls" id="scrollControls" style="display:none;">
-    <button class="scroll-btn" onclick="scrollPage(-250)" aria-label="Scroll up">&#9650;</button>
-    <button class="scroll-btn" onclick="scrollPage(250)" aria-label="Scroll down">&#9660;</button>
+    <button class="scroll-btn-large" id="scrollDownBtn" onclick="nextContactPage()">More contacts &#9660;</button>
   </div>
 
   <!-- ===== BOTTOM MENU BAR ===== -->
@@ -4026,31 +4014,7 @@
       return _origFetch.call(window, url, opts);
     };
 
-    // ===== SCROLL BUTTONS =====
-    function scrollPage(amount) {
-      // Find the active scrollable element
-      const activeSettings = document.querySelector('.settings-screen.active');
-      const homeScreen = document.getElementById('homeScreen');
-      const target = activeSettings || (homeScreen && homeScreen.style.display === 'flex' ? homeScreen : null);
-      if (target) {
-        target.scrollBy({ top: amount, behavior: 'smooth' });
-      }
-    }
-
-    // Show/hide scroll buttons based on content overflow
-    function updateScrollButtons() {
-      const controls = document.getElementById('scrollControls');
-      if (!controls) return;
-      const activeSettings = document.querySelector('.settings-screen.active');
-      const homeScreen = document.getElementById('homeScreen');
-      const target = activeSettings || (homeScreen && homeScreen.style.display === 'flex' ? homeScreen : null);
-      if (target && target.scrollHeight > target.clientHeight + 20) {
-        controls.style.display = 'flex';
-      } else {
-        controls.style.display = 'none';
-      }
-    }
-    setInterval(updateScrollButtons, 1000);
+    // Contact pagination is handled by renderContactPage/nextContactPage/prevContactPage
 
     // ===== INIT =====
     function init() {
@@ -4221,48 +4185,81 @@
     setInterval(updateTime, 1000);
 
     // ===== CONTACTS =====
+    let homeContacts = [];
+    let contactPage = 0;
+    const CONTACTS_PER_PAGE = 2;
+
     function loadContacts() {
       fetch('./contacts.json')
         .then(r => { if (!r.ok) throw new Error(); return r.json(); })
         .then(data => {
-          const grid = document.getElementById('contactsGrid');
-          grid.innerHTML = '';
-          if (!data.contacts || !data.contacts.length) {
-            grid.innerHTML = '<div class="error">No contacts found.</div>';
-            return;
-          }
-          data.contacts.sort((a,b) => a.position - b.position).slice(0,4).forEach(contact => {
-            const tile = document.createElement('div');
-            tile.className = 'contact-tile';
-            tile.onclick = () => confirmCallContact(contact);
-
-            const photoDiv = document.createElement('div');
-            photoDiv.className = 'contact-photo';
-            const img = document.createElement('img');
-            img.src = contact.photo;
-            img.alt = contact.name;
-            img.onerror = () => {
-              photoDiv.innerHTML = '<div class="contact-photo-fallback">' + contact.name.charAt(0) + '</div>';
-            };
-            photoDiv.appendChild(img);
-
-            const nameDiv = document.createElement('div');
-            nameDiv.className = 'contact-name';
-            nameDiv.textContent = contact.name;
-
-            const relDiv = document.createElement('div');
-            relDiv.style.cssText = 'font-family:Jost,sans-serif;font-weight:500;font-size:var(--body);color:var(--mid);text-align:center;margin-top:4px;';
-            relDiv.textContent = contact.relationship || '';
-
-            tile.appendChild(photoDiv);
-            tile.appendChild(nameDiv);
-            tile.appendChild(relDiv);
-            grid.appendChild(tile);
-          });
+          homeContacts = (data.contacts || []).sort((a,b) => a.position - b.position);
+          contactPage = 0;
+          renderContactPage();
         })
         .catch(() => {
           document.getElementById('contactsGrid').innerHTML = '<div class="error">Unable to load contacts.</div>';
         });
+    }
+
+    function renderContactPage() {
+      const grid = document.getElementById('contactsGrid');
+      grid.innerHTML = '';
+      if (!homeContacts.length) {
+        grid.innerHTML = '<div class="error">No contacts found.</div>';
+        document.getElementById('scrollUpBtn').style.display = 'none';
+        document.getElementById('scrollDownBtn').style.display = 'none';
+        return;
+      }
+      const start = contactPage * CONTACTS_PER_PAGE;
+      const pageContacts = homeContacts.slice(start, start + CONTACTS_PER_PAGE);
+      pageContacts.forEach(contact => {
+        const tile = document.createElement('div');
+        tile.className = 'contact-tile';
+        tile.onclick = () => confirmCallContact(contact);
+
+        const photoDiv = document.createElement('div');
+        photoDiv.className = 'contact-photo';
+        const img = document.createElement('img');
+        img.src = contact.photo;
+        img.alt = contact.name;
+        img.onerror = () => {
+          photoDiv.innerHTML = '<div class="contact-photo-fallback">' + contact.name.charAt(0) + '</div>';
+        };
+        photoDiv.appendChild(img);
+
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'contact-name';
+        nameDiv.textContent = contact.name;
+
+        const relDiv = document.createElement('div');
+        relDiv.style.cssText = 'font-family:Jost,sans-serif;font-weight:500;font-size:var(--body);color:var(--mid);text-align:center;margin-top:4px;';
+        relDiv.textContent = contact.relationship || '';
+
+        tile.appendChild(photoDiv);
+        tile.appendChild(nameDiv);
+        tile.appendChild(relDiv);
+        grid.appendChild(tile);
+      });
+      // Show/hide pagination buttons
+      const hasMore = start + CONTACTS_PER_PAGE < homeContacts.length;
+      const hasPrev = contactPage > 0;
+      document.getElementById('scrollUpBtn').style.display = hasPrev ? 'flex' : 'none';
+      document.getElementById('scrollDownBtn').style.display = hasMore ? 'flex' : 'none';
+    }
+
+    function nextContactPage() {
+      if ((contactPage + 1) * CONTACTS_PER_PAGE < homeContacts.length) {
+        contactPage++;
+        renderContactPage();
+      }
+    }
+
+    function prevContactPage() {
+      if (contactPage > 0) {
+        contactPage--;
+        renderContactPage();
+      }
     }
 
     // ===== SCREENS =====
