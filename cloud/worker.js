@@ -243,12 +243,20 @@ async function d1AddMessage(env, deviceId, msg) {
   } catch (e) { console.error('D1 addMessage error:', e.message); }
 }
 
+const ALLOWED_MSG_COLUMNS = new Set([
+  'delivered_at', 'read_at', 'deleted_by_sender', 'deleted_by_sender_at',
+  'deleted_by_recipient', 'deleted_by_recipient_at', 'deleted_for_everyone',
+  'deleted_for_everyone_by', 'deleted_for_everyone_at', 'email_notification_sent',
+  'is_reply', 'reactions'
+]);
+
 async function d1UpdateMessage(env, deviceId, msgId, updates) {
   if (!env.KEN_DB) return;
   try {
     const sets = []; const vals = [];
     for (const [k, v] of Object.entries(updates)) {
       const col = k.replace(/([A-Z])/g, '_$1').toLowerCase();
+      if (!ALLOWED_MSG_COLUMNS.has(col)) continue; // whitelist only
       sets.push(`${col} = ?`); vals.push(typeof v === 'boolean' ? (v?1:0) : v);
     }
     if (sets.length === 0) return;
@@ -905,6 +913,8 @@ export default {
 
     // Disable also uses email+password directly (no cookie needed)
     if (request.method === 'POST' && path === '/api/auth/mfa/disable') {
+      const rl = await checkRateLimit(env, request, 'mfa-disable', 5, 300);
+      if (rl.limited) return json({ error: 'Too many attempts. Please wait a few minutes and try again.' }, 429);
       try {
         const body = await request.json();
         const { email, password } = body;
@@ -967,7 +977,7 @@ export default {
           return json({ success: true });
         }
         // Email failed — return token directly so user can still reset
-        return json({ success: true, resetToken });
+        return json({ success: true });
       } catch (e) { return json({ error: e.message || 'Invalid request' }, 400); }
     }
 
@@ -5084,7 +5094,7 @@ function json(data, status = 200, corsHeaders = null) {
   };
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains', ...cors },
+    headers: { 'Content-Type': 'application/json', 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains', 'X-Content-Type-Options': 'nosniff', ...cors },
   });
 }
 
@@ -7026,13 +7036,13 @@ function familyHTML(deviceId) {
 
 function timingSafeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
-  if (a.length !== b.length) return false;
   const encoder = new TextEncoder();
   const bufA = encoder.encode(a);
   const bufB = encoder.encode(b);
-  let result = 0;
-  for (let i = 0; i < bufA.length; i++) {
-    result |= bufA[i] ^ bufB[i];
+  const maxLen = Math.max(bufA.length, bufB.length);
+  let result = bufA.length ^ bufB.length; // length mismatch contributes to result but doesn't early-return
+  for (let i = 0; i < maxLen; i++) {
+    result |= (bufA[i] || 0) ^ (bufB[i] || 0);
   }
   return result === 0;
 }
