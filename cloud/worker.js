@@ -369,8 +369,23 @@ export default {
         if (!email || !password) return json({ error: 'Please enter your email address and password.' }, 400);
         const user = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
         if (!user) return json({ error: 'That email and password combination doesn\'t match our records. Please check and try again.' }, 401);
+        // Account lockout: 5 failed attempts in 15 minutes
+        const lockoutKey = `lockout:${email.toLowerCase()}`;
+        const lockout = await env.KEN_KV.get(lockoutKey, 'json');
+        if (lockout && lockout.count >= 5) {
+          return json({ error: 'This account has been temporarily locked after too many failed attempts. Please try again in 15 minutes.' }, 429);
+        }
         const pwResult = await verifyPassword(password, user.passwordHash, user.passwordSalt || 'ken-salt-2026');
-        if (!pwResult.valid) return json({ error: 'That email and password combination doesn\'t match our records. Please check and try again.' }, 401);
+        if (!pwResult.valid) {
+          const newCount = (lockout ? lockout.count : 0) + 1;
+          await env.KEN_KV.put(lockoutKey, JSON.stringify({ count: newCount }), { expirationTtl: 900 });
+          if (newCount >= 5) {
+            return json({ error: 'This account has been temporarily locked after too many failed attempts. Please try again in 15 minutes.' }, 429);
+          }
+          return json({ error: 'That email and password combination doesn\'t match our records. Please check and try again.' }, 401);
+        }
+        // Successful login — clear lockout counter
+        await env.KEN_KV.delete(lockoutKey);
         // Rehash with PBKDF2 if still using legacy SHA-256
         if (pwResult.needsRehash) {
           const { hash: newHash, salt: newSalt } = await hashPassword(password, user.passwordSalt || 'ken-salt-2026');
@@ -4538,7 +4553,14 @@ function json(data, status = 200, corsHeaders = null) {
 
 function html(body) {
   return new Response(body, {
-    headers: { 'Content-Type': 'text/html' },
+    headers: {
+      'Content-Type': 'text/html',
+      'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+      'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.theken.uk https://*.daily.co wss://*.daily.co; frame-src https://*.daily.co; media-src 'self' blob:",
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'strict-origin-when-cross-origin',
+    },
   });
 }
 
