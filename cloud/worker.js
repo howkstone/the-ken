@@ -234,6 +234,161 @@ async function d1GetAllDevices(env) {
   } catch (e) { console.error('D1 getAllDevices error:', e.message); return []; }
 }
 
+// ===== D1 MESSAGE HELPERS =====
+async function d1AddMessage(env, deviceId, msg) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare(`INSERT OR IGNORE INTO messages (id, device_id, from_name, from_email, text, sent_at, delivered_at, read_at, is_reply, is_system_alert, is_system_broadcast, alert_to, group_id, group_name, was_scheduled, email_notification_sent) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .bind(msg.id, deviceId, msg.from||'', msg.fromEmail||null, msg.text||'', msg.sentAt||new Date().toISOString(), msg.deliveredAt||null, msg.readAt||null, msg.isReply?1:0, msg.isSystemAlert?1:0, msg.isSystemBroadcast?1:0, msg.alertTo||null, msg.groupId||null, msg.groupName||null, msg.wasScheduled?1:0, msg.emailNotificationSent?1:0).run();
+  } catch (e) { console.error('D1 addMessage error:', e.message); }
+}
+
+async function d1UpdateMessage(env, deviceId, msgId, updates) {
+  if (!env.KEN_DB) return;
+  try {
+    const sets = []; const vals = [];
+    for (const [k, v] of Object.entries(updates)) {
+      const col = k.replace(/([A-Z])/g, '_$1').toLowerCase();
+      sets.push(`${col} = ?`); vals.push(typeof v === 'boolean' ? (v?1:0) : v);
+    }
+    if (sets.length === 0) return;
+    vals.push(msgId);
+    await env.KEN_DB.prepare(`UPDATE messages SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
+  } catch (e) { console.error('D1 updateMessage error:', e.message); }
+}
+
+async function d1GetHistory(env, deviceId) {
+  if (!env.KEN_DB) return [];
+  try {
+    const rows = await env.KEN_DB.prepare('SELECT * FROM messages WHERE device_id = ? ORDER BY sent_at DESC LIMIT 200').bind(deviceId).all();
+    return rows.results.map(r => ({
+      id: r.id, from: r.from_name, fromEmail: r.from_email, text: r.text,
+      sentAt: r.sent_at, deliveredAt: r.delivered_at, readAt: r.read_at,
+      isReply: !!r.is_reply, isSystemAlert: !!r.is_system_alert, isSystemBroadcast: !!r.is_system_broadcast,
+      alertTo: r.alert_to, groupId: r.group_id, groupName: r.group_name,
+      wasScheduled: !!r.was_scheduled, deletedBySender: !!r.deleted_by_sender,
+      deletedByRecipient: !!r.deleted_by_recipient, deletedForEveryone: !!r.deleted_for_everyone,
+      emailNotificationSent: !!r.email_notification_sent
+    }));
+  } catch (e) { console.error('D1 getHistory error:', e.message); return []; }
+}
+
+// ===== D1 CONTACTS HELPERS =====
+async function d1GetContacts(env, deviceId) {
+  if (!env.KEN_DB) return [];
+  try {
+    const rows = await env.KEN_DB.prepare('SELECT * FROM contacts WHERE device_id = ? ORDER BY position').bind(deviceId).all();
+    return rows.results.map(r => ({
+      id: r.id, name: r.name, relationship: r.relationship, phoneNumber: r.phone_number,
+      photo: r.photo, birthday: r.birthday, isEmergencyContact: !!r.is_emergency_contact,
+      hasPOA: !!r.has_poa, position: r.position
+    }));
+  } catch (e) { console.error('D1 getContacts error:', e.message); return []; }
+}
+
+async function d1SaveContacts(env, deviceId, contacts) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare('DELETE FROM contacts WHERE device_id = ?').bind(deviceId).run();
+    for (const c of contacts) {
+      await env.KEN_DB.prepare('INSERT INTO contacts (id, device_id, name, relationship, phone_number, photo, birthday, is_emergency_contact, has_poa, position) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .bind(c.id, deviceId, c.name||'', c.relationship||'', c.phoneNumber||'', c.photo||'', c.birthday||null, c.isEmergencyContact?1:0, c.hasPOA?1:0, c.position||0).run();
+    }
+  } catch (e) { console.error('D1 saveContacts error:', e.message); }
+}
+
+// ===== D1 CALL HISTORY HELPERS =====
+async function d1SaveCallHistory(env, deviceId, callData) {
+  if (!env.KEN_DB) return;
+  try {
+    const calls = callData.calls || [];
+    for (const c of calls) {
+      await env.KEN_DB.prepare('INSERT OR IGNORE INTO call_history (id, device_id, from_name, to_name, status, duration, timestamp, email_notification_sent) VALUES (?,?,?,?,?,?,?,?)')
+        .bind(c.id || crypto.randomUUID(), deviceId, c.from||'', c.to||'', c.status||'', c.duration||0, c.timestamp||new Date().toISOString(), c.emailNotificationSent?1:0).run();
+    }
+  } catch (e) { console.error('D1 saveCallHistory error:', e.message); }
+}
+
+// ===== D1 VOICEMAIL HELPERS =====
+async function d1SaveVoicemails(env, deviceId, voicemails) {
+  if (!env.KEN_DB) return;
+  try {
+    for (const v of voicemails) {
+      await env.KEN_DB.prepare('INSERT INTO voicemails (id, device_id, from_name, type, r2_key, duration, timestamp, played, played_at, delivered, delivered_at, email_notification_sent) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET played=excluded.played, played_at=excluded.played_at, delivered=excluded.delivered, delivered_at=excluded.delivered_at, email_notification_sent=excluded.email_notification_sent')
+        .bind(v.id, deviceId, v.from||'', v.type||'video', v.r2Key||null, v.duration||0, v.timestamp||new Date().toISOString(), v.played?1:0, v.playedAt||null, v.delivered?1:0, v.deliveredAt||null, v.emailNotificationSent?1:0).run();
+    }
+  } catch (e) { console.error('D1 saveVoicemails error:', e.message); }
+}
+
+// ===== D1 AUDIT HELPERS =====
+async function d1AddAudit(env, deviceId, userId, action, details) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare('INSERT INTO audit_logs (id, device_id, user_id, action, details, timestamp) VALUES (?,?,?,?,?,?)')
+      .bind(crypto.randomUUID(), deviceId, userId, action, JSON.stringify(details||{}), new Date().toISOString()).run();
+  } catch (e) { console.error('D1 addAudit error:', e.message); }
+}
+
+// ===== D1 MEDICAL HELPERS =====
+async function d1SaveMedical(env, deviceId, data) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare('INSERT INTO medical_info (device_id, gp, medications, allergies, conditions, care_notes, care_notes_log, updated_at, updated_by) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET gp=excluded.gp, medications=excluded.medications, allergies=excluded.allergies, conditions=excluded.conditions, care_notes=excluded.care_notes, care_notes_log=excluded.care_notes_log, updated_at=excluded.updated_at, updated_by=excluded.updated_by')
+      .bind(deviceId, JSON.stringify(data.gp||{}), JSON.stringify(data.medications||[]), JSON.stringify(data.allergies||[]), JSON.stringify(data.conditions||[]), data.careNotes||'', JSON.stringify(data.careNotesLog||[]), data.updatedAt||new Date().toISOString(), data.updatedBy||'').run();
+  } catch (e) { console.error('D1 saveMedical error:', e.message); }
+}
+
+// ===== D1 REMINDERS HELPERS =====
+async function d1SaveReminders(env, deviceId, reminders) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare('DELETE FROM reminders WHERE device_id = ?').bind(deviceId).run();
+    for (const r of reminders) {
+      await env.KEN_DB.prepare('INSERT INTO reminders (id, device_id, label, medication_name, dosage, instructions, photo, time, days, frequency, start_date, end_date, enabled, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(r.id, deviceId, r.label||'', r.medicationName||'', r.dosage||'', r.instructions||'', r.photo||'', r.time||'', JSON.stringify(r.days||[]), r.frequency||'daily', r.startDate||null, r.endDate||null, r.enabled!==false?1:0, r.createdBy||'', r.createdAt||new Date().toISOString()).run();
+    }
+  } catch (e) { console.error('D1 saveReminders error:', e.message); }
+}
+
+// ===== D1 FEEDBACK HELPERS =====
+async function d1SaveFeedback(env, deviceId, tickets) {
+  if (!env.KEN_DB) return;
+  try {
+    for (const t of tickets) {
+      await env.KEN_DB.prepare('INSERT INTO feedback_tickets (id, device_id, text, from_name, from_email, category, type, status, submitted_by_email, submitted_by_name, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status')
+        .bind(t.id, deviceId, t.text||'', t.from||'', t.fromEmail||'', t.category||'', t.type||'', t.status||'open', t.submittedBy?.email||'', t.submittedBy?.name||'', t.timestamp||new Date().toISOString()).run();
+      for (const r of (t.replies||[])) {
+        await env.KEN_DB.prepare('INSERT OR IGNORE INTO feedback_replies (id, ticket_id, from_name, from_email, role, text, image, timestamp) VALUES (?,?,?,?,?,?,?,?)')
+          .bind(r.id, t.id, r.from||'', r.fromEmail||'', r.role||'', r.text||'', r.image||null, r.timestamp||new Date().toISOString()).run();
+      }
+    }
+  } catch (e) { console.error('D1 saveFeedback error:', e.message); }
+}
+
+// ===== D1 SETTINGS/CONFIG HELPERS =====
+async function d1SaveSettings(env, deviceId, settings) {
+  if (!env.KEN_DB) return;
+  try {
+    await env.KEN_DB.prepare('INSERT INTO device_settings (device_id, settings) VALUES (?, ?) ON CONFLICT(device_id) DO UPDATE SET settings=excluded.settings')
+      .bind(deviceId, JSON.stringify(settings)).run();
+  } catch (e) { console.error('D1 saveSettings error:', e.message); }
+}
+
+async function d1SaveGroups(env, deviceId, groups) {
+  if (!env.KEN_DB) return;
+  try {
+    for (const g of groups) {
+      await env.KEN_DB.prepare('INSERT INTO groups (id, device_id, name, cover_photo, created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, cover_photo=excluded.cover_photo, updated_at=excluded.updated_at')
+        .bind(g.id, deviceId, g.name||'', g.coverPhoto||'', g.createdBy||'', g.createdAt||new Date().toISOString(), g.updatedAt||null).run();
+      await env.KEN_DB.prepare('DELETE FROM group_members WHERE group_id = ?').bind(g.id).run();
+      for (const m of (g.members||[])) {
+        await env.KEN_DB.prepare('INSERT INTO group_members (group_id, user_id, name, role) VALUES (?,?,?,?)')
+          .bind(g.id, m.userId||'', m.name||'', m.role||'member').run();
+      }
+    }
+  } catch (e) { console.error('D1 saveGroups error:', e.message); }
+}
+
 // Dual-write helper: saves user to both KV and D1
 async function saveUserDual(env, email, user) {
   await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
@@ -977,7 +1132,15 @@ export default {
             updated++;
           }
         }
-        if (updated > 0) await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        if (updated > 0) {
+          await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+          // D1 dual-write: mark delivered
+          for (const msg of history) {
+            if (pendingIds.includes(msg.id) && msg.deliveredAt === now) {
+              try { await d1UpdateMessage(env, deviceId, msg.id, { deliveredAt: now }); } catch (e) { console.error('D1 dual-write error (ack delivered):', e.message); }
+            }
+          }
+        }
       }
       await env.KEN_KV.delete(`messages:${deviceId}`);
       return json({ success: true });
@@ -999,7 +1162,15 @@ export default {
             updated++;
           }
         }
-        if (updated > 0) await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        if (updated > 0) {
+          await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+          // D1 dual-write: mark delivered
+          for (const msg of history) {
+            if (messageIds.includes(msg.id) && msg.deliveredAt === now) {
+              try { await d1UpdateMessage(env, deviceId, msg.id, { deliveredAt: now }); } catch (e) { console.error('D1 dual-write error (delivered):', e.message); }
+            }
+          }
+        }
         return json({ success: true, updated });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
@@ -1021,6 +1192,8 @@ export default {
         if (msg && !msg.readAt) {
           msg.readAt = new Date().toISOString();
           await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+          // D1 dual-write: mark read
+          try { await d1UpdateMessage(env, deviceId, messageId, { readAt: msg.readAt }); } catch (e) { console.error('D1 dual-write error (read):', e.message); }
         }
         return json({ success: true });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
@@ -1092,6 +1265,14 @@ export default {
           }
         }
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        // D1 dual-write: update deletion flags
+        try {
+          const d1Updates = {};
+          if (msg.deletedForEveryone) { d1Updates.deletedForEveryone = true; d1Updates.deletedForEveryoneBy = msg.deletedForEveryoneBy; d1Updates.deletedForEveryoneAt = msg.deletedForEveryoneAt; }
+          if (msg.deletedByRecipient) { d1Updates.deletedByRecipient = true; d1Updates.deletedByRecipientAt = msg.deletedByRecipientAt; }
+          if (msg.deletedBySender) { d1Updates.deletedBySender = true; d1Updates.deletedBySenderAt = msg.deletedBySenderAt; }
+          await d1UpdateMessage(env, deviceId, messageId, d1Updates);
+        } catch (e) { console.error('D1 dual-write error (soft delete):', e.message); }
         return json({ success: true });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
@@ -1123,6 +1304,8 @@ export default {
         history.push(message);
         if (history.length > 100) history.splice(0, history.length - 100);
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        // D1 dual-write: add reply message
+        try { await d1AddMessage(env, deviceId, message); } catch (e) { console.error('D1 dual-write error (reply):', e.message); }
         return json({ success: true });
       } catch {
         return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
@@ -1190,6 +1373,8 @@ export default {
         return json({ error: 'Message not found' }, 404);
       }
       await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(filtered));
+      // D1 dual-write: hard delete
+      try { await d1UpdateMessage(env, deviceId, messageId, { deleted: true }); } catch (e) { console.error('D1 dual-write error (hard delete):', e.message); }
       return json({ success: true });
     }
 
@@ -1337,6 +1522,7 @@ export default {
       try {
         const body = await request.json();
         await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(body.contacts || []));
+        try { await d1SaveContacts(env, deviceId, body.contacts || []); } catch {}
         const session = await getSession(request, env);
         await logAudit(env, deviceId, session ? session.email : 'device', 'Synced contacts', { count: (body.contacts || []).length });
         return json({ success: true });
@@ -1370,6 +1556,7 @@ export default {
         if (phoneNumber !== undefined) contact.phoneNumber = phoneNumber;
         if (body.birthday !== undefined) contact.birthday = body.birthday; // YYYY-MM-DD format
         await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
+        try { await d1SaveContacts(env, deviceId, contacts); } catch {}
         return json({ success: true });
       } catch {
         return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
@@ -1393,6 +1580,7 @@ export default {
         // Re-number positions
         filtered.forEach((c, i) => c.position = i + 1);
         await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(filtered));
+        try { await d1SaveContacts(env, deviceId, filtered); } catch {}
         return json({ success: true });
       } catch {
         return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
@@ -1415,6 +1603,7 @@ export default {
         if (!contact) return json({ error: 'Contact not found' }, 404);
         contact.isEmergencyContact = !!isEmergencyContact;
         await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
+        try { await d1SaveContacts(env, deviceId, contacts); } catch {}
         const session = await getSession(request, env);
         await logAudit(env, deviceId, session ? session.email : 'unknown', isEmergencyContact ? 'Marked emergency contact' : 'Unmarked emergency contact', { contactName: contact.name });
         return json({ success: true });
@@ -1439,6 +1628,7 @@ export default {
         if (!contact) return json({ error: 'Contact not found' }, 404);
         contact.hasPOA = !!hasPOA;
         await env.KEN_KV.put(`contactlist:${deviceId}`, JSON.stringify(contacts));
+        try { await d1SaveContacts(env, deviceId, contacts); } catch {}
         await logAudit(env, deviceId, auth.user.email, hasPOA ? 'Set POA on contact' : 'Removed POA from contact', { contactName: contact.name });
         return json({ success: true });
       } catch {
@@ -1577,6 +1767,7 @@ export default {
         existing.updatedBy = auth.user.email;
         const encrypted = await encryptObject(env, existing, SENSITIVE_FIELDS);
         await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(encrypted));
+        try { await d1SaveMedical(env, deviceId, encrypted); } catch {}
         await logAudit(env, deviceId, auth.user.email, 'Updated medical info', { fields: Object.keys(body).filter(k => body[k] !== undefined) });
         return json({ success: true });
       } catch {
@@ -1611,6 +1802,7 @@ export default {
         existing.careNotesUpdatedBy = auth.user.email;
         const encMedical = await encryptObject(env, existing, SENSITIVE_FIELDS);
         await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(encMedical));
+        try { await d1SaveMedical(env, deviceId, encMedical); } catch {}
         await logAudit(env, deviceId, auth.user.email, 'Added care note', { preview: newNote.slice(0, 50) });
         return json({ success: true });
       } catch {
@@ -1827,6 +2019,8 @@ export default {
           history.push(message);
           if (history.length > 100) history.splice(0, history.length - 100);
           await env.KEN_KV.put(`history:${did}`, JSON.stringify(history));
+          // D1 dual-write: add broadcast message
+          try { await d1AddMessage(env, did, message); } catch (e) { console.error('D1 dual-write error (broadcast):', e.message); }
           sent++;
         }
         await logAudit(env, allDevices[0] || 'system', auth.user.email, 'HQ broadcast sent', { text: text.slice(0, 50), deviceCount: sent });
@@ -2087,6 +2281,7 @@ export default {
         };
         reminders.push(reminder);
         await env.KEN_KV.put(`reminders:${deviceId}`, JSON.stringify(reminders));
+        try { await d1SaveReminders(env, deviceId, reminders); } catch {}
         await logAudit(env, deviceId, auth.user.email, 'Added reminder', { label: reminder.label, time: reminder.time });
         return json({ success: true, reminder });
       } catch {
@@ -2111,6 +2306,7 @@ export default {
       const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
       const filtered = reminders.filter(r => r.id !== reminderId);
       await env.KEN_KV.put(`reminders:${deviceId}`, JSON.stringify(filtered));
+      try { await d1SaveReminders(env, deviceId, filtered); } catch {}
       await logAudit(env, deviceId, auth.user.email, 'Deleted reminder', { reminderId });
       return json({ success: true });
     }
@@ -2263,6 +2459,7 @@ export default {
             const settings = await env.KEN_KV.get(`settings:${deviceId}`, 'json') || {};
             settings[item.setting] = item.value;
             await env.KEN_KV.put(`settings:${deviceId}`, JSON.stringify(settings));
+            try { await d1SaveSettings(env, deviceId, settings); } catch {}
           }
         }
         await env.KEN_KV.delete(`queue:${deviceId}`);
@@ -2366,6 +2563,10 @@ export default {
         }
         if (history.length > 100) history.splice(0, history.length - 100);
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        // D1 dual-write: add offline alert messages
+        for (const msg of history.slice(-alertsSent)) {
+          try { await d1AddMessage(env, deviceId, msg); } catch (e) { console.error('D1 dual-write error (offline alert):', e.message); }
+        }
         return json({ success: true, alertsSent });
       } catch {
         return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
@@ -2378,6 +2579,7 @@ export default {
       try {
         const body = await request.json();
         await env.KEN_KV.put(`callhistory:${deviceId}`, JSON.stringify(body));
+        try { await d1SaveCallHistory(env, deviceId, body); } catch {}
         return json({ success: true });
       } catch {
         return json({ error: 'Something went wrong. Please check your input and try again.' }, 400);
@@ -2405,6 +2607,7 @@ export default {
       try {
         const body = await request.json();
         await env.KEN_KV.put(`settings:${deviceId}`, JSON.stringify(body));
+        try { await d1SaveSettings(env, deviceId, body); } catch {}
         const session = await getSession(request, env);
         await logAudit(env, deviceId, session ? session.email : 'device', 'Updated device settings', body);
         return json({ success: true });
@@ -2459,6 +2662,7 @@ export default {
         feedback.push(body);
         if (feedback.length > 100) feedback.splice(0, feedback.length - 100);
         await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
+        try { await d1SaveFeedback(env, deviceId, feedback); } catch {}
         await logAudit(env, deviceId, session ? session.email : (body.from || 'device'), 'Submitted feedback', { type: body.type || 'text' });
         return json({ success: true, ticketId: body.id });
       } catch {
@@ -2515,6 +2719,7 @@ export default {
         if (!ticket.replies) ticket.replies = [];
         ticket.replies.push(reply);
         await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
+        try { await d1SaveFeedback(env, deviceId, feedback); } catch {}
         await logAudit(env, deviceId, auth.user.email, 'Replied to feedback ticket', { ticketId });
         return json({ success: true, reply });
       } catch {
@@ -2542,6 +2747,7 @@ export default {
         }
         ticket.status = body.status;
         await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
+        try { await d1SaveFeedback(env, deviceId, feedback); } catch {}
         await logAudit(env, deviceId, auth.user.email, 'Updated feedback ticket status', { ticketId, status: body.status });
         return json({ success: true, status: ticket.status });
       } catch {
@@ -2658,6 +2864,7 @@ export default {
           }
         }
         await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
+        try { await d1SaveVoicemails(env, deviceId, voicemails); } catch {}
         // Clear the voicemail request signal
         await env.KEN_KV.delete(`voicemail-req:${deviceId}`);
         return json({ success: true });
@@ -2698,6 +2905,7 @@ export default {
       }
       const filtered = voicemails.filter(v => v.id !== vmId);
       await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(filtered));
+      try { await d1SaveVoicemails(env, deviceId, filtered); } catch {}
       await logAudit(env, deviceId, auth.user.email, 'Deleted voicemail', { vmId });
       return json({ success: true });
     }
@@ -2713,6 +2921,7 @@ export default {
         vm.delivered = true;
         vm.deliveredAt = new Date().toISOString();
         await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
+        try { await d1SaveVoicemails(env, deviceId, voicemails); } catch {}
       }
       return json({ success: true });
     }
@@ -2728,6 +2937,7 @@ export default {
         vm.played = true;
         vm.playedAt = new Date().toISOString();
         await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
+        try { await d1SaveVoicemails(env, deviceId, voicemails); } catch {}
       }
       return json({ success: true });
     }
@@ -2838,6 +3048,8 @@ export default {
         msg.reactions = msg.reactions.filter(r => r.reactorId !== reactorId);
         msg.reactions.push({ emoji, reactorName, reactorId, reactedAt: new Date().toISOString() });
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        // D1 dual-write: update reactions
+        try { await d1UpdateMessage(env, deviceId, messageId, { reactions: JSON.stringify(msg.reactions) }); } catch (e) { console.error('D1 dual-write error (reaction):', e.message); }
         return json({ success: true });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
@@ -2864,6 +3076,7 @@ export default {
           medAlerts.push({ id: crypto.randomUUID(), reminderId, label, action, timestamp: new Date().toISOString(), resolved: false });
           if (medAlerts.length > 50) medAlerts.splice(0, medAlerts.length - 50);
           await env.KEN_KV.put(`med-alerts:${deviceId}`, JSON.stringify(medAlerts));
+          // TODO: D1 dual-write for med-alerts
           // Email carers/admins
           const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
           const userName = deviceInfo.userName || 'The Ken user';
@@ -2913,6 +3126,7 @@ export default {
         alert.resolvedBy = auth.user.email;
         alert.resolvedAt = new Date().toISOString();
         await env.KEN_KV.put(`med-alerts:${deviceId}`, JSON.stringify(alerts));
+        // TODO: D1 dual-write for med-alerts
       }
       return json({ success: true });
     }
@@ -2969,6 +3183,7 @@ export default {
         }
         groups.push(group);
         await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(groups));
+        try { await d1SaveGroups(env, deviceId, groups); } catch {}
         await logAudit(env, deviceId, auth.user.email, 'Created group', { groupName: group.name, memberCount: group.members.length });
         return json({ success: true, group });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
@@ -3014,6 +3229,7 @@ export default {
         }
         group.updatedAt = new Date().toISOString();
         await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(groups));
+        try { await d1SaveGroups(env, deviceId, groups); } catch {}
         await logAudit(env, deviceId, auth.user.email, 'Updated group', { groupId, groupName: group.name });
         return json({ success: true, group });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
@@ -3036,6 +3252,7 @@ export default {
       }
       const filtered = groups.filter(g => g.id !== groupId);
       await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(filtered));
+      try { await d1SaveGroups(env, deviceId, filtered); } catch {}
       await logAudit(env, deviceId, auth.user.email, 'Deleted group', { groupId, groupName: group.name });
       return json({ success: true });
     }
@@ -3075,6 +3292,8 @@ export default {
         history.push(message);
         if (history.length > 100) history.splice(0, history.length - 100);
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        // D1 dual-write: add group message
+        try { await d1AddMessage(env, deviceId, message); } catch (e) { console.error('D1 dual-write error (group msg):', e.message); }
         return json({ success: true, message: { id: message.id } });
       } catch (e) { console.error('API error:', e.message); return json({ error: 'Something went wrong. Please try again.' }, 400); }
     }
@@ -3158,6 +3377,8 @@ export default {
         history.push(message);
         if (history.length > 100) history.splice(0, history.length - 100);
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        // D1 dual-write: add send-now scheduled message
+        try { await d1AddMessage(env, deviceId, message); } catch (e) { console.error('D1 dual-write error (send-now):', e.message); }
         await logAudit(env, deviceId, auth.user.email, 'Sent scheduled message now', { schedId });
       }
       return json({ success: true });
@@ -3387,6 +3608,7 @@ export default {
                 medical.careNotesLog = await encryptField(env, JSON.stringify(medical.careNotesLog));
               }
               await env.KEN_KV.put(`medical:${deviceId}`, JSON.stringify(medical));
+              try { await d1SaveMedical(env, deviceId, medical); } catch {}
             }
           }
 
@@ -3399,6 +3621,7 @@ export default {
               return updated;
             });
             await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(tokenised));
+            try { await d1SaveFeedback(env, deviceId, tokenised); } catch {}
           }
 
           // --- Scheduled messages: tokenise sender ---
@@ -3420,6 +3643,7 @@ export default {
               createdBy: g.createdBy === targetEmail ? token : g.createdBy,
             }));
             await env.KEN_KV.put(`groups:${deviceId}`, JSON.stringify(tokenised));
+            try { await d1SaveGroups(env, deviceId, tokenised); } catch {}
           }
 
           // --- Clean up per-user keyed data for this device ---
@@ -4168,23 +4392,30 @@ export default {
         const deviceName = deviceInfo.userName || 'The Ken';
         const alertText = deviceName + ' has been offline for ' + offlineMinutes + ' minutes. Please check the internet connection.';
         const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
+        const newAlertMsgs = [];
 
         for (const contactName of alertSettings.contactNames) {
           const contact = contacts.find(c => c.name === contactName);
           if (contact) {
-            history.push({
+            const alertMsg = {
               id: crypto.randomUUID(),
               from: 'System',
               text: alertText,
               sentAt: new Date().toISOString(),
               isSystemAlert: true,
               alertTo: contactName
-            });
+            };
+            history.push(alertMsg);
+            newAlertMsgs.push(alertMsg);
           }
         }
 
         if (history.length > 100) history.splice(0, history.length - 100);
         await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+        // D1 dual-write: add cron offline alert messages
+        for (const alertMsg of newAlertMsgs) {
+          try { await d1AddMessage(env, deviceId, alertMsg); } catch (e) { console.error('D1 dual-write error (cron alert):', e.message); }
+        }
 
         // Email all admin/carer users for this device
         try {
@@ -4408,8 +4639,8 @@ export default {
 
         // Persist emailNotificationSent flags
         if (history.length > 0) await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
-        if (voicemails.length > 0) await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails));
-        if (calls.length > 0) await env.KEN_KV.put(`callhistory:${deviceId}`, JSON.stringify({ calls }));
+        if (voicemails.length > 0) { await env.KEN_KV.put(`voicemails:${deviceId}`, JSON.stringify(voicemails)); try { await d1SaveVoicemails(env, deviceId, voicemails); } catch {} }
+        if (calls.length > 0) { await env.KEN_KV.put(`callhistory:${deviceId}`, JSON.stringify({ calls })); try { await d1SaveCallHistory(env, deviceId, { calls }); } catch {} }
       } catch {}
     }
 
@@ -4436,6 +4667,8 @@ export default {
           history.push(message);
           if (history.length > 100) history.splice(0, history.length - 100);
           await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+          // D1 dual-write: add scheduled delivery message
+          try { await d1AddMessage(env, deviceId, message); } catch (e) { console.error('D1 dual-write error (scheduled delivery):', e.message); }
           modified = true;
         }
         if (modified) await env.KEN_KV.put(`scheduled-msgs:${deviceId}`, JSON.stringify(scheduled));
@@ -4707,6 +4940,8 @@ async function handleSendMessage(request, env, deviceId) {
     // Keep last 100 messages
     if (history.length > 100) history.splice(0, history.length - 100);
     await env.KEN_KV.put(`history:${deviceId}`, JSON.stringify(history));
+    // D1 dual-write: add sent message
+    try { await d1AddMessage(env, deviceId, message); } catch (e) { console.error('D1 dual-write error (send):', e.message); }
 
     return json({ success: true, message: { id: message.id } });
   } catch {
@@ -6849,6 +7084,8 @@ async function logAudit(env, deviceId, email, action, details) {
       }
     }
     await env.KEN_KV.put(`audit:${deviceId}`, JSON.stringify(audit));
+    // Dual-write to D1
+    try { await d1AddAudit(env, deviceId, email, action, details); } catch {}
   } catch {
     // Audit logging should never break the main flow
   }
