@@ -417,6 +417,90 @@ async function getMedical(env, deviceId) {
   return await env.KEN_KV.get(`medical:${deviceId}`, 'json');
 }
 
+async function getReminders(env, deviceId) {
+  if (env.KEN_DB) {
+    try {
+      const rows = await env.KEN_DB.prepare('SELECT * FROM reminders WHERE device_id = ?').bind(deviceId).all();
+      if (rows.results.length > 0) return rows.results.map(r => ({ id: r.id, label: r.label, medicationName: r.medication_name, dosage: r.dosage, instructions: r.instructions, photo: r.photo, time: r.time, days: JSON.parse(r.days||'[]'), frequency: r.frequency, startDate: r.start_date, endDate: r.end_date, enabled: !!r.enabled, createdBy: r.created_by, createdAt: r.created_at }));
+    } catch {}
+  }
+  return await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
+}
+
+async function getVoicemails(env, deviceId) {
+  if (env.KEN_DB) {
+    try {
+      const rows = await env.KEN_DB.prepare('SELECT * FROM voicemails WHERE device_id = ? ORDER BY timestamp DESC').bind(deviceId).all();
+      if (rows.results.length > 0) return rows.results.map(r => ({ id: r.id, from: r.from_name, type: r.type, r2Key: r.r2_key, duration: r.duration, timestamp: r.timestamp, played: !!r.played, playedAt: r.played_at, delivered: !!r.delivered, deliveredAt: r.delivered_at, emailNotificationSent: !!r.email_notification_sent }));
+    } catch {}
+  }
+  return await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+}
+
+async function getFeedback(env, deviceId) {
+  if (env.KEN_DB) {
+    try {
+      const tickets = await env.KEN_DB.prepare('SELECT * FROM feedback_tickets WHERE device_id = ? ORDER BY timestamp DESC').bind(deviceId).all();
+      if (tickets.results.length > 0) {
+        const result = [];
+        for (const t of tickets.results) {
+          const replies = await env.KEN_DB.prepare('SELECT * FROM feedback_replies WHERE ticket_id = ? ORDER BY timestamp').bind(t.id).all();
+          result.push({ id: t.id, text: t.text, from: t.from_name, fromEmail: t.from_email, category: t.category, type: t.type, status: t.status, submittedBy: { email: t.submitted_by_email, name: t.submitted_by_name }, timestamp: t.timestamp, replies: replies.results.map(r => ({ id: r.id, from: r.from_name, fromEmail: r.from_email, role: r.role, text: r.text, image: r.image, timestamp: r.timestamp })) });
+        }
+        return result;
+      }
+    } catch {}
+  }
+  return await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+}
+
+async function getGroups(env, deviceId) {
+  if (env.KEN_DB) {
+    try {
+      const rows = await env.KEN_DB.prepare('SELECT * FROM groups WHERE device_id = ?').bind(deviceId).all();
+      if (rows.results.length > 0) {
+        const result = [];
+        for (const g of rows.results) {
+          const members = await env.KEN_DB.prepare('SELECT * FROM group_members WHERE group_id = ?').bind(g.id).all();
+          result.push({ id: g.id, name: g.name, coverPhoto: g.cover_photo, createdBy: g.created_by, createdAt: g.created_at, updatedAt: g.updated_at, members: members.results.map(m => ({ userId: m.user_id, name: m.name, role: m.role })) });
+        }
+        return result;
+      }
+    } catch {}
+  }
+  return await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+}
+
+async function getAudit(env, deviceId) {
+  if (env.KEN_DB) {
+    try {
+      const rows = await env.KEN_DB.prepare('SELECT * FROM audit_logs WHERE device_id = ? ORDER BY timestamp DESC LIMIT 500').bind(deviceId).all();
+      if (rows.results.length > 0) return rows.results.map(r => ({ id: r.id, userId: r.user_id, action: r.action, timestamp: r.timestamp, details: JSON.parse(r.details||'{}') }));
+    } catch {}
+  }
+  return await env.KEN_KV.get(`audit:${deviceId}`, 'json') || [];
+}
+
+async function getCallHistory(env, deviceId) {
+  if (env.KEN_DB) {
+    try {
+      const rows = await env.KEN_DB.prepare('SELECT * FROM call_history WHERE device_id = ? ORDER BY timestamp DESC LIMIT 100').bind(deviceId).all();
+      if (rows.results.length > 0) return { calls: rows.results.map(r => ({ id: r.id, from: r.from_name, to: r.to_name, status: r.status, duration: r.duration, timestamp: r.timestamp, emailNotificationSent: !!r.email_notification_sent })) };
+    } catch {}
+  }
+  return await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || { calls: [] };
+}
+
+async function getMedAlerts(env, deviceId) {
+  if (env.KEN_DB) {
+    try {
+      const rows = await env.KEN_DB.prepare('SELECT * FROM med_alerts WHERE device_id = ? ORDER BY timestamp DESC LIMIT 50').bind(deviceId).all();
+      if (rows.results.length > 0) return rows.results.map(r => ({ id: r.id, reminderId: r.reminder_id, label: r.label, action: r.action, timestamp: r.timestamp, resolved: !!r.resolved, resolvedBy: r.resolved_by, resolvedAt: r.resolved_at }));
+    } catch {}
+  }
+  return await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+}
+
 // Dual-write helper: saves user to both KV and D1
 async function saveUserDual(env, email, user) {
   await env.KEN_KV.put(`user:${email.toLowerCase()}`, JSON.stringify(user));
@@ -922,7 +1006,7 @@ export default {
       const devices = await env.KEN_KV.get('devices:all', 'json') || [];
       const allFeedback = [];
       for (const deviceId of devices) {
-        const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+        const feedback = await getFeedback(env, deviceId);
         feedback.forEach(f => { f.deviceId = deviceId; });
         allFeedback.push(...feedback);
       }
@@ -1010,7 +1094,7 @@ export default {
       if (auth.error) return auth.response;
       const perm = requirePermission(auth.user, deviceId, 'view:audit');
       if (!perm.allowed) return json({ error: 'Insufficient permissions' }, 403);
-      const audit = await env.KEN_KV.get(`audit:${deviceId}`, 'json') || [];
+      const audit = await getAudit(env, deviceId);
       return json({ audit });
     }
 
@@ -1971,7 +2055,7 @@ export default {
         const heartbeat = await env.KEN_KV.get(`heartbeat:${did}`, 'json');
         const online = heartbeat ? (Date.now() - new Date(heartbeat.lastSeen || heartbeat.timestamp).getTime() < 360000) : false;
         // Fetch alert counts for traffic light status
-        const medAlerts = await env.KEN_KV.get(`med-alerts:${did}`, 'json') || [];
+        const medAlerts = await getMedAlerts(env, did);
         const unresolvedAlerts = medAlerts.filter(a => !a.resolved).length;
         const history = await env.KEN_KV.get(`history:${did}`, 'json') || [];
         const unreadMessages = history.filter(m => m.isReply && !m.readAt && !m.deletedForEveryone).length;
@@ -2290,7 +2374,7 @@ export default {
       if (!hasPermission(role, 'edit:reminders')) return json({ error: 'Admin or carer access required' }, 403);
       try {
         const body = await request.json();
-        const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
+        const reminders = await getReminders(env, deviceId);
         const reminder = {
           id: crypto.randomUUID(),
           label: sanitize(body.label || body.medicationName || ''),
@@ -2319,7 +2403,7 @@ export default {
 
     if (request.method === 'GET' && path.match(/^\/api\/reminders\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
-      const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
+      const reminders = await getReminders(env, deviceId);
       return json({ reminders });
     }
 
@@ -2331,7 +2415,7 @@ export default {
       if (auth.error) return auth.response;
       const role = getUserRole(auth.user, deviceId);
       if (!hasPermission(role, 'edit:reminders')) return json({ error: 'Admin or carer access required' }, 403);
-      const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
+      const reminders = await getReminders(env, deviceId);
       const filtered = reminders.filter(r => r.id !== reminderId);
       await env.KEN_KV.put(`reminders:${deviceId}`, JSON.stringify(filtered));
       try { await d1SaveReminders(env, deviceId, filtered); } catch {}
@@ -2616,8 +2700,8 @@ export default {
 
     if (request.method === 'GET' && path.match(/^\/api\/history\/[\w-]+\/calls$/)) {
       const deviceId = path.split('/')[3];
-      const history = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json');
-      return json(history || { calls: [] });
+      const history = await getCallHistory(env, deviceId);
+      return json(history);
     }
 
     // ===== DO NOT DISTURB / SCHEDULE =====
@@ -2686,7 +2770,7 @@ export default {
         body.id = crypto.randomUUID();
         body.status = 'open';
         body.replies = [];
-        const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+        const feedback = await getFeedback(env, deviceId);
         feedback.push(body);
         if (feedback.length > 100) feedback.splice(0, feedback.length - 100);
         await env.KEN_KV.put(`feedback:${deviceId}`, JSON.stringify(feedback));
@@ -2707,7 +2791,7 @@ export default {
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
       const userRole = getUserRole(auth.user, deviceId);
-      const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+      const feedback = await getFeedback(env, deviceId);
       const ticket = feedback.find(f => f.id === ticketId);
       if (!ticket) return json({ error: 'Ticket not found' }, 404);
       // HQ/admin see any ticket; others only their own
@@ -2725,7 +2809,7 @@ export default {
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
       const userRole = getUserRole(auth.user, deviceId);
-      const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+      const feedback = await getFeedback(env, deviceId);
       const ticket = feedback.find(f => f.id === ticketId);
       if (!ticket) return json({ error: 'Ticket not found' }, 404);
       // HQ/admin can reply to any; others only their own
@@ -2764,7 +2848,7 @@ export default {
       if (auth.error) return auth.response;
       const userRole = getUserRole(auth.user, deviceId);
       if (!['admin', 'hq'].includes(userRole)) return json({ error: 'Admin or HQ access required' }, 403);
-      const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+      const feedback = await getFeedback(env, deviceId);
       const ticket = feedback.find(f => f.id === ticketId);
       if (!ticket) return json({ error: 'Ticket not found' }, 404);
       try {
@@ -2788,7 +2872,7 @@ export default {
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
       const userRole = getUserRole(auth.user, deviceId);
-      const feedback = await env.KEN_KV.get(`feedback:${deviceId}`, 'json') || [];
+      const feedback = await getFeedback(env, deviceId);
       // HQ and admin see all; others see only their own
       if (!['admin', 'hq'].includes(userRole)) {
         const userFeedback = feedback.filter(f => f.fromEmail === auth.user.email);
@@ -2840,7 +2924,7 @@ export default {
         const { from, type, media, duration, timestamp } = body;
         if (!from || !media) return json({ error: 'from and media required' }, 400);
         if (media.length > MAX_VOICEMAIL_BASE64 * 1.4) return json({ error: 'Voicemail too large (max 5MB)' }, 400);
-        const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+        const voicemails = await getVoicemails(env, deviceId);
         const vmId = crypto.randomUUID();
         const vmType = type || 'video';
         // If R2 binding exists, store media bytes in R2 and only metadata in KV
@@ -2904,7 +2988,7 @@ export default {
     // Get all voicemails for a device
     if (request.method === 'GET' && path.match(/^\/api\/voicemail\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
-      const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+      const voicemails = await getVoicemails(env, deviceId);
       // For R2-backed voicemails, return a media URL instead of base64
       const mapped = voicemails.map(v => {
         if (v.r2Key) {
@@ -2925,7 +3009,7 @@ export default {
       if (auth.error) return auth.response;
       const role = getUserRole(auth.user, deviceId);
       if (!role) return json({ error: 'Access denied' }, 403);
-      const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+      const voicemails = await getVoicemails(env, deviceId);
       // Find voicemail to check for R2 key before filtering
       const toDelete = voicemails.find(v => v.id === vmId);
       if (toDelete && toDelete.r2Key && env.KEN_MEDIA) {
@@ -2943,7 +3027,7 @@ export default {
       const parts = path.split('/');
       const deviceId = parts[3];
       const vmId = parts[4];
-      const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+      const voicemails = await getVoicemails(env, deviceId);
       const vm = voicemails.find(v => v.id === vmId);
       if (vm) {
         vm.delivered = true;
@@ -2959,7 +3043,7 @@ export default {
       const parts = path.split('/');
       const deviceId = parts[3];
       const vmId = parts[4];
-      const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+      const voicemails = await getVoicemails(env, deviceId);
       const vm = voicemails.find(v => v.id === vmId);
       if (vm) {
         vm.played = true;
@@ -3003,15 +3087,15 @@ export default {
       const history = await d1GetHistory(env, deviceId);
       const unreadMessages = history.filter(m => m.isReply && !m.readAt && !m.deletedForEveryone && !m.deletedBySender).length;
       // Unread voicemails
-      const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
+      const voicemails = await getVoicemails(env, deviceId);
       const unreadVoicemails = voicemails.filter(v => !v.played).length;
       // Missed calls (from call history, missed in last 24h)
-      const callHistory = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || {};
+      const callHistory = await getCallHistory(env, deviceId);
       const calls = callHistory.calls || [];
       const oneDayAgo = Date.now() - 86400000;
       const missedCalls = calls.filter(c => c.status === 'missed' && new Date(c.timestamp).getTime() > oneDayAgo).length;
       // Medication alerts (for carers): check recent reminder responses marked not-taken
-      const medAlerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+      const medAlerts = await getMedAlerts(env, deviceId);
       const unresolvedMedAlerts = medAlerts.filter(a => !a.resolved).length;
       return json({ unreadMessages, unreadVoicemails, missedCalls, medicationAlerts: unresolvedMedAlerts, total: unreadMessages + unreadVoicemails + missedCalls + unresolvedMedAlerts });
     }
@@ -3093,14 +3177,14 @@ export default {
         if (!action || !['taken', 'not-taken', 'snoozed', 'ignored'].includes(action)) {
           return json({ error: 'action must be taken, not-taken, snoozed, or ignored' }, 400);
         }
-        const reminders = await env.KEN_KV.get(`reminders:${deviceId}`, 'json') || [];
+        const reminders = await getReminders(env, deviceId);
         const reminder = reminders.find(r => r.id === reminderId);
         const label = reminder ? (reminder.label || reminder.text || 'Medication') : 'Medication';
         // Log to audit
         await logAudit(env, deviceId, 'device', 'Medication reminder: ' + action, { reminderId, label, snoozeCount: body.snoozeCount || 0 });
         if (action === 'not-taken' || action === 'ignored') {
           // Alert carers via email
-          const medAlerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+          const medAlerts = await getMedAlerts(env, deviceId);
           medAlerts.push({ id: crypto.randomUUID(), reminderId, label, action, timestamp: new Date().toISOString(), resolved: false });
           if (medAlerts.length > 50) medAlerts.splice(0, medAlerts.length - 50);
           await env.KEN_KV.put(`med-alerts:${deviceId}`, JSON.stringify(medAlerts));
@@ -3137,7 +3221,7 @@ export default {
       const deviceId = path.split('/')[3];
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
-      const alerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+      const alerts = await getMedAlerts(env, deviceId);
       return json({ alerts });
     }
 
@@ -3147,7 +3231,7 @@ export default {
       const alertId = parts[4];
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
-      const alerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+      const alerts = await getMedAlerts(env, deviceId);
       const alert = alerts.find(a => a.id === alertId);
       if (alert) {
         alert.resolved = true;
@@ -3196,7 +3280,7 @@ export default {
         const body = await request.json();
         const { name, coverPhoto, members } = body;
         if (!name || !name.trim()) return json({ error: 'Group name required' }, 400);
-        const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+        const groups = await getGroups(env, deviceId);
         const group = {
           id: crypto.randomUUID(),
           name: sanitize(name),
@@ -3220,7 +3304,7 @@ export default {
     // List groups for a device
     if (request.method === 'GET' && path.match(/^\/api\/groups\/[\w-]+$/)) {
       const deviceId = path.split('/')[3];
-      const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+      const groups = await getGroups(env, deviceId);
       return json({ groups });
     }
 
@@ -3229,7 +3313,7 @@ export default {
       const parts = path.split('/');
       const deviceId = parts[3];
       const groupId = parts[4];
-      const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+      const groups = await getGroups(env, deviceId);
       const group = groups.find(g => g.id === groupId);
       if (!group) return json({ error: 'Group not found' }, 404);
       return json({ group });
@@ -3242,7 +3326,7 @@ export default {
       const groupId = parts[4];
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
-      const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+      const groups = await getGroups(env, deviceId);
       const group = groups.find(g => g.id === groupId);
       if (!group) return json({ error: 'Group not found' }, 404);
       // Only group admins can update
@@ -3270,7 +3354,7 @@ export default {
       const groupId = parts[4];
       const auth = await requireAuth(request, env);
       if (auth.error) return auth.response;
-      const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+      const groups = await getGroups(env, deviceId);
       const group = groups.find(g => g.id === groupId);
       if (!group) return json({ error: 'Group not found' }, 404);
       const memberEntry = group.members.find(m => m.userId === auth.user.email);
@@ -3298,7 +3382,7 @@ export default {
         const body = await request.json();
         const { text } = body;
         if (!text || !text.trim()) return json({ error: 'Text required' }, 400);
-        const groups = await env.KEN_KV.get(`groups:${deviceId}`, 'json') || [];
+        const groups = await getGroups(env, deviceId);
         const group = groups.find(g => g.id === groupId);
         if (!group) return json({ error: 'Group not found' }, 404);
         const message = {
@@ -3433,7 +3517,7 @@ export default {
       // Include call history if requested
       let callResults = [];
       if (type === 'all' || type === 'calls') {
-        const callData = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || {};
+        const callData = await getCallHistory(env, deviceId);
         const calls = callData.calls || [];
         if (contact) callResults = calls.filter(c => (c.contactName || '').toLowerCase() === contact.toLowerCase());
         else if (query) callResults = calls.filter(c => (c.contactName || '').toLowerCase().includes(query));
@@ -3456,12 +3540,12 @@ export default {
         getContacts(env, deviceId),
         getMedical(env, deviceId),
         getSettings(env, deviceId),
-        env.KEN_KV.get(`audit:${deviceId}`, 'json'),
-        env.KEN_KV.get(`reminders:${deviceId}`, 'json'),
-        env.KEN_KV.get(`voicemails:${deviceId}`, 'json'),
-        env.KEN_KV.get(`callhistory:${deviceId}`, 'json'),
+        getAudit(env, deviceId),
+        getReminders(env, deviceId),
+        getVoicemails(env, deviceId),
+        getCallHistory(env, deviceId),
         env.KEN_KV.get(`device:${deviceId}`, 'json'),
-        env.KEN_KV.get(`feedback:${deviceId}`, 'json'),
+        getFeedback(env, deviceId),
       ]);
       const exportData = {
         exportedAt: new Date().toISOString(),
@@ -4500,7 +4584,7 @@ export default {
 
         // 2. Missed medication trigger
         if (escConfig.triggers.missedMedication && escConfig.triggers.missedMedication.enabled) {
-          const medAlerts = await env.KEN_KV.get(`med-alerts:${deviceId}`, 'json') || [];
+          const medAlerts = await getMedAlerts(env, deviceId);
           const unresolved = medAlerts.filter(a => !a.resolved && a.timestamp && (escNow - new Date(a.timestamp).getTime()) > (escConfig.triggers.missedMedication.delayMinutes || 0) * 60000);
           if (unresolved.length > 0) {
             triggerChecks.push({ type: 'missedMedication', message: unresolved.length + ' missed medication reminder' + (unresolved.length > 1 ? 's' : '') + ' for ' + deviceName });
@@ -4509,7 +4593,7 @@ export default {
 
         // 3. Missed call trigger
         if (escConfig.triggers.missedCall && escConfig.triggers.missedCall.enabled) {
-          const callData = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || {};
+          const callData = await getCallHistory(env, deviceId);
           const calls = callData.calls || [];
           const recentMissed = calls.filter(c => c.status === 'missed' && c.timestamp && (escNow - new Date(c.timestamp).getTime()) < 3600000 && (escNow - new Date(c.timestamp).getTime()) > (escConfig.triggers.missedCall.delayMinutes || 0) * 60000);
           if (recentMissed.length > 0) {
@@ -4597,8 +4681,8 @@ export default {
         // Get all users with access to this device
         const allUsers = await env.KEN_KV.list({ prefix: 'user:' });
         const history = await env.KEN_KV.get(`history:${deviceId}`, 'json') || [];
-        const voicemails = await env.KEN_KV.get(`voicemails:${deviceId}`, 'json') || [];
-        const callHistoryData = await env.KEN_KV.get(`callhistory:${deviceId}`, 'json') || {};
+        const voicemails = await getVoicemails(env, deviceId);
+        const callHistoryData = await getCallHistory(env, deviceId);
         const calls = callHistoryData.calls || [];
         const deviceInfo = await env.KEN_KV.get(`device:${deviceId}`, 'json') || {};
         const userName = deviceInfo.userName || 'The Ken';
