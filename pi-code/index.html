@@ -537,6 +537,41 @@
       padding: 32px 24px;
       padding-bottom: 80px;
       z-index: 1;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* Scroll buttons for all scrollable areas */
+    .scroll-controls {
+      position: fixed;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      z-index: 50;
+    }
+    .scroll-btn {
+      width: 52px;
+      height: 64px;
+      background: rgba(196, 169, 98, 0.9);
+      color: #FDFAF5;
+      border: none;
+      border-radius: 12px;
+      font-size: 28px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 8px rgba(26, 23, 20, 0.2);
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .scroll-btn:active {
+      background: var(--gold-light);
+      transform: scale(0.95);
     }
 
     .top-bar {
@@ -2662,6 +2697,12 @@
     </div>
   </div>
 
+  <!-- Scroll buttons (visible when home screen has overflow) -->
+  <div class="scroll-controls" id="scrollControls" style="display:none;">
+    <button class="scroll-btn" onclick="scrollPage(-250)" aria-label="Scroll up">&#9650;</button>
+    <button class="scroll-btn" onclick="scrollPage(250)" aria-label="Scroll down">&#9660;</button>
+  </div>
+
   <!-- ===== BOTTOM MENU BAR ===== -->
   <div class="bottom-nav" id="bottomNav">
     <button class="nav-btn menu-trigger" id="menuTrigger" onclick="toggleMenu()" style="text-align:left;padding-left:28px;">
@@ -3984,6 +4025,32 @@
       }
       return _origFetch.call(window, url, opts);
     };
+
+    // ===== SCROLL BUTTONS =====
+    function scrollPage(amount) {
+      // Find the active scrollable element
+      const activeSettings = document.querySelector('.settings-screen.active');
+      const homeScreen = document.getElementById('homeScreen');
+      const target = activeSettings || (homeScreen && homeScreen.style.display === 'flex' ? homeScreen : null);
+      if (target) {
+        target.scrollBy({ top: amount, behavior: 'smooth' });
+      }
+    }
+
+    // Show/hide scroll buttons based on content overflow
+    function updateScrollButtons() {
+      const controls = document.getElementById('scrollControls');
+      if (!controls) return;
+      const activeSettings = document.querySelector('.settings-screen.active');
+      const homeScreen = document.getElementById('homeScreen');
+      const target = activeSettings || (homeScreen && homeScreen.style.display === 'flex' ? homeScreen : null);
+      if (target && target.scrollHeight > target.clientHeight + 20) {
+        controls.style.display = 'flex';
+      } else {
+        controls.style.display = 'none';
+      }
+    }
+    setInterval(updateScrollButtons, 1000);
 
     // ===== INIT =====
     function init() {
