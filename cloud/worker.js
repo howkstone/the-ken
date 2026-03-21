@@ -442,7 +442,7 @@ export default {
         if (!email || !password || !name) return json({ error: 'Please fill in your name, email address, and password.' }, 400);
         if (!consent) return json({ error: 'You must agree to the Privacy Policy and Terms to create an account.' }, 400);
         if (password.length < 8) return json({ error: 'Password must be at least 8 characters long.' }, 400);
-        const existing = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json');
+        const existing = await env.KEN_KV.get(`user:${email.toLowerCase()}`, 'json') || await d1GetUser(env, email);
         if (existing) return json({ error: 'An account with this email address already exists. Try signing in instead.' }, 400);
         const { hash: passwordHash, salt: passwordSalt } = await hashPassword(password);
         const devices = {};
@@ -2187,6 +2187,14 @@ export default {
             await env.KEN_KV.put(key.name, JSON.stringify(u));
           } catch {}
         }
+        // Also update D1 tables
+        if (env.KEN_DB) {
+          try {
+            await env.KEN_DB.prepare('UPDATE devices SET device_id = ? WHERE device_id = ?').bind(newId, oldId).run();
+            await env.KEN_DB.prepare('UPDATE device_keys SET device_id = ? WHERE device_id = ?').bind(newId, oldId).run();
+            await env.KEN_DB.prepare('UPDATE user_devices SET device_id = ? WHERE device_id = ?').bind(newId, oldId).run();
+          } catch (e) { console.error('D1 device migration error (non-fatal):', e.message); }
+        }
         await logAudit(env, newId, 'system', 'Device ID migrated', { oldId, newId });
         return json({ success: true, oldId, newId });
       } catch (e) { return json({ error: 'Migration failed: ' + e.message }, 500); }
@@ -3646,7 +3654,7 @@ export default {
               await env.KEN_DB.prepare('INSERT OR IGNORE INTO device_keys (device_id, key_hash) VALUES (?, ?)').bind(deviceId, keyHash).run();
               results.deviceKeys++;
             }
-          } catch (e) { results.errors.push(`device:${deviceId}: ${e.message}`); }
+          } catch (e) { results.errors.push(`device:${deviceId}: migration error`); }
         }
         // Migrate users
         const userList = await env.KEN_KV.list({ prefix: 'user:' });
@@ -3657,7 +3665,7 @@ export default {
             await d1SaveUser(env, user);
             results.users++;
             if (user.devices) results.userDevices += Object.keys(user.devices).length;
-          } catch (e) { results.errors.push(`${key.name}: ${e.message}`); }
+          } catch (e) { results.errors.push(`${key.name}: migration error`); }
         }
         // Migrate invites
         const inviteList = await env.KEN_KV.list({ prefix: 'invite:' });
@@ -3671,9 +3679,9 @@ export default {
             await env.KEN_DB.prepare('INSERT OR IGNORE INTO invites (device_id, email, role, invited_by, created_at) VALUES (?, ?, ?, ?, ?)')
               .bind(deviceId, email, invite.role || 'standard', invite.invitedBy || null, invite.createdAt || new Date().toISOString()).run();
             results.invites++;
-          } catch (e) { results.errors.push(`${key.name}: ${e.message}`); }
+          } catch (e) { results.errors.push(`${key.name}: migration error`); }
         }
-      } catch (e) { results.errors.push(`Fatal: ${e.message}`); }
+      } catch (e) { results.errors.push('Fatal migration error'); console.error('Migration fatal:', e.message); }
       return json(results);
     }
 
@@ -6707,9 +6715,9 @@ async function getSession(request, env) {
 async function requireAuth(request, env) {
   const session = await getSession(request, env);
   if (!session) return { error: true, response: json({ error: 'Not authenticated' }, 401) };
-  // Try D1 first, fall back to KV
-  let user = await d1GetUser(env, session.email);
-  if (!user) user = await env.KEN_KV.get(`user:${session.email}`, 'json');
+  // KV is source of truth during dual-write transition; D1 is fallback only
+  let user = await env.KEN_KV.get(`user:${session.email}`, 'json');
+  if (!user) user = await d1GetUser(env, session.email);
   if (!user) return { error: true, response: json({ error: 'User not found' }, 401) };
   return { error: false, user, session };
 }
