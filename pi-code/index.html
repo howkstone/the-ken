@@ -6425,7 +6425,10 @@
       const incomingActive = document.getElementById('incomingScreen').classList.contains('active');
       const msgNotifActive = document.getElementById('msgNotification').classList.contains('active');
       const reminderActive = document.getElementById('reminderNotification').classList.contains('active');
-      return homeVisible && !callingActive && !callActive && !incomingActive && !msgNotifActive && !reminderActive;
+      // Check no settings/menu screens are open
+      const anySettingsOpen = document.querySelector('.settings-screen.active') !== null;
+      const menuOpen = document.getElementById('menuOverlay').classList.contains('active');
+      return homeVisible && !callingActive && !callActive && !incomingActive && !msgNotifActive && !reminderActive && !anySettingsOpen && !menuOpen;
     }
 
     function startIdleClock() {
