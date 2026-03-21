@@ -703,6 +703,19 @@ sendHeartbeat();
 ensureDeviceRoom();
 syncContactsToCloud();
 
+// Simple in-memory rate limiter (per-endpoint, 60 requests/minute)
+const rateLimitMap = new Map();
+function checkLocalRateLimit(endpoint) {
+  const now = Date.now();
+  const entry = rateLimitMap.get(endpoint);
+  if (!entry || now - entry.start > 60000) {
+    rateLimitMap.set(endpoint, { count: 1, start: now });
+    return false;
+  }
+  entry.count++;
+  return entry.count > 60;
+}
+
 const server = http.createServer(async (req, res) => {
   // Restrict CORS to Electron app only (file:// sends 'null' origin)
   const origin = req.headers.origin || '';
@@ -726,6 +739,13 @@ const server = http.createServer(async (req, res) => {
   if (authToken !== LOCAL_AUTH_TOKEN) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Unauthorized' }));
+    return;
+  }
+
+  // Rate limit: 60 requests/minute per endpoint
+  if (checkLocalRateLimit(req.url.split('?')[0])) {
+    res.writeHead(429, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Too many requests' }));
     return;
   }
 

@@ -6803,13 +6803,12 @@
     function updateNightlightButton() {
       const btn = document.getElementById('nightlightToggleBtn');
       if (!btn) return;
-      if (isNightlightHours()) {
-        btn.style.display = 'block';
-        btn.style.color = nightlightActive ? 'var(--gold)' : 'var(--mid)';
-        btn.textContent = nightlightActive ? '\u263E' : '\u2600';
-      } else {
-        btn.style.display = 'none';
-      }
+      // Always show nightlight button so users can activate manually anytime
+      btn.style.display = 'flex';
+      btn.style.color = nightlightActive ? 'var(--gold)' : 'var(--mid)';
+      btn.innerHTML = nightlightActive
+        ? '<span style="font-size:24px;">\u263E</span><span style="font-size:11px;margin-top:2px;">ON</span>'
+        : '<span style="font-size:24px;">\u2600</span><span style="font-size:11px;margin-top:2px;">NIGHT</span>';
     }
 
     // Check nightlight every 60 seconds
