@@ -1,6 +1,6 @@
 {
   "name": "the-ken",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "Voice-first video calling device for elderly users",
   "main": "main.js",
   "scripts": {
