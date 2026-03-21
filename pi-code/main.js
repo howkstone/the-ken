@@ -44,13 +44,26 @@ function createWindow() {
   win.loadFile('index.html');
   win.setMenuBarVisibility(false);
 
-  // Force window to front and focus
+  // Log renderer console messages and errors to stdout
+  win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    const levels = ['LOG', 'WARN', 'ERROR'];
+    console.log(`[RENDERER ${levels[level] || level}] ${message} (line ${line})`);
+  });
+
+  // Force window to front and focus (kiosk: always on top)
   win.once('ready-to-show', () => {
     win.show();
     win.focus();
-    win.setAlwaysOnTop(true);
-    // Release always-on-top after 2 seconds so it doesn't block system dialogs
-    setTimeout(() => win.setAlwaysOnTop(false), 2000);
+    if (isProduction) {
+      win.setAlwaysOnTop(true, 'screen-saver');
+    }
+  });
+
+  // Re-focus on any click/touch that might go to root window
+  win.on('blur', () => {
+    if (isProduction) {
+      setTimeout(() => { win.focus(); win.setAlwaysOnTop(true, 'screen-saver'); }, 100);
+    }
   });
 
   // Expose window for screen capture (used by server.js for HQ remote viewing)
